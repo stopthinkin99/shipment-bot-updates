@@ -107,10 +107,29 @@ class _LabelHandler:
             # Re-import each time so hot-updated processor is used
             import importlib, processor
             importlib.reload(processor)
-            processor.process_label(path)
+            data = processor.process_label(path)
+            self._log_data(data)
             self.log(f"✓  {os.path.basename(path)}")
         except Exception as e:
             self.log(f"✗  {os.path.basename(path)}: {e}")
+
+    def _log_data(self, data: dict):
+        """Print each extracted field on its own line, so it's easy
+        to scan what the bot got vs. what needs a manual check."""
+        if not data:
+            return
+        fields = [
+            ("Date",     data.get("date")),
+            ("Ship To",  data.get("ship_to")),
+            ("Invoice",  data.get("invoice")),
+            ("Carrier",  data.get("carrier")),
+            ("Tracking", data.get("tracking_number")),
+            ("Sheet",    data.get("sheet")),
+            ("Remark",   data.get("remark")),
+        ]
+        for label, value in fields:
+            shown = value if value else "—"
+            self.log(f"    {label:<9}: {shown}")
 
 
 class WatcherThread(threading.Thread):
