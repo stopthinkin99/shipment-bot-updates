@@ -1,4 +1,5 @@
 import re
+import datetime
 
 
 # ------------------------------------------------------------------ #
@@ -54,6 +55,11 @@ def _find_date(text):
     Ship date in compact form, e.g. 09JUL26 / 06JUL26.
     We match the DATE VALUE directly instead of relying on the words
     'SHIP DATE', because OCR often mangles them (e.g. 'Son DATE:').
+
+    If no date can be found anywhere on the label (common on UPS/Zales
+    labels which don't always print a ship date), fall back to
+    TODAY'S date — the date the label was actually dropped into the
+    watch folder — in the same DDMONYY format used elsewhere.
     """
     # Prefer a value sitting next to the word DATE
     m = re.search(r'DATE[:;\s]*([0-9]{1,2}[A-Z]{3}[0-9]{2,4})',
@@ -63,7 +69,11 @@ def _find_date(text):
 
     # Fallback: any compact DDMONYY token anywhere on the label
     m = re.search(r'\b([0-9]{1,2}[A-Z]{3}[0-9]{2,4})\b', text, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
+    if m:
+        return m.group(1).upper()
+
+    # Nothing found on the label at all — use today's date
+    return datetime.date.today().strftime("%d%b%y").upper()
 
 
 def _sheet_from_invoice(number):
@@ -222,10 +232,17 @@ def _standard_ship_to(text):
             if names:
                 break
             continue
-        if re.match(r'^[\(\d]', c):        # street address / phone -> stop
+
+        # Strip trailing OCR noise (=, ~, ., -, |, etc.) that Tesseract
+        # sometimes appends to lines near barcodes/dividers
+        c_clean = re.sub(r'[\s=~\.\|_\-]+$', '', c).strip()
+        if not c_clean:
+            continue
+
+        if re.match(r'^[\(\d]', c_clean):   # street address / phone -> stop
             break
-        if re.match(r"^[A-Z][A-Z0-9 .,&'\-]+$", c):
-            names.append(c)
+        if re.match(r"^[A-Z][A-Z0-9 .,&'\-]*$", c_clean):
+            names.append(c_clean)
         elif names:
             break
 
