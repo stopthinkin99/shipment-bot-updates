@@ -1,29 +1,29 @@
 """
 mailer.py  —  Sends alert emails via local Outlook (win32com).
-Zero external SMTP, zero API.  Uses the Outlook desktop app already
-installed on the PC — same security boundary as the user's email.
+Zero external SMTP, zero API. Uses Outlook desktop app on the PC.
 """
 
 import datetime
 
-# Alert recipient — update this when you have the address
-ALERT_TO = "finance@unicreation.com"   # <-- change this
+ALERT_TO = "shipping@unidesignusa.com"
+
 
 def send_alert(pdf_path: str, data: dict, reason: str):
-    """
-    Fire an Outlook email telling the user a label needs manual entry.
-    Includes everything the bot DID extract so they only have to fill
-    in the blanks.
-    """
     try:
         import win32com.client as win32
-        outlook = win32.Dispatch("Outlook.Application")
-        mail    = outlook.CreateItem(0)   # 0 = olMailItem
 
-        mail.To      = ALERT_TO
+        outlook = win32.Dispatch("Outlook.Application")
+        mail = outlook.CreateItem(0)
+
+        # Set recipient explicitly via Recipients collection
+        recipient = mail.Recipients.Add(ALERT_TO)
+        recipient.Type = 1   # 1 = olTo
+        mail.Recipients.ResolveAll()
+
         mail.Subject = f"[Shipment Bot] Manual Review Needed — {_basename(pdf_path)}"
         mail.Body    = _body(pdf_path, data, reason)
         mail.Send()
+
         print(f"[MAIL] Alert sent to {ALERT_TO}")
 
     except Exception as e:
@@ -33,11 +33,11 @@ def send_alert(pdf_path: str, data: dict, reason: str):
 
 
 def _basename(path):
-    import os; return os.path.basename(path)
+    import os
+    return os.path.basename(path)
 
 
 def _body(pdf_path, data, reason):
-    extracted = []
     field_map = [
         ("Date",            data.get("date")),
         ("Ship To",         data.get("ship_to")),
@@ -47,26 +47,27 @@ def _body(pdf_path, data, reason):
         ("Sheet",           data.get("sheet")),
         ("Remark (col G)",  data.get("remark")),
     ]
+
+    extracted = []
     for label, value in field_map:
-        status = value if value else "⚠ NOT FOUND"
+        status = value if value else "*** NOT FOUND — enter manually ***"
         extracted.append(f"  {label:<20}: {status}")
 
     lines = [
-        "The shipment automation bot could not fully process the label below.",
-        "Please open the tracking sheet and enter the missing fields manually.",
+        "The shipment bot could not fully process the label below.",
+        "Please open the tracking sheet and fill in the missing fields.",
         "",
         f"Label file : {pdf_path}",
         f"Reason     : {reason}",
         f"Time       : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
-        "Fields extracted (✓ = confirmed, ⚠ = needs manual entry):",
+        "Fields extracted by the bot:",
         *extracted,
         "",
         "Instructions:",
-        "  1. Open TRACKING_SHIPMENT.xlsx and go to the correct sheet (see 'Sheet' above).",
+        "  1. Open TRACKING_SHIPMENT.xlsx and go to the correct sheet.",
         "  2. Add a new row after today's last entry.",
-        "  3. Fill in any ⚠ fields by checking the physical label or Diaspark.",
-        "  4. If the date is missing, use today's ship date from the label.",
+        "  3. Fill in any *** NOT FOUND *** fields from the physical label.",
         "",
         "This is an automated message from the Uni Creation Shipment Bot.",
     ]
