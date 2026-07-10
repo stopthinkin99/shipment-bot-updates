@@ -89,38 +89,48 @@ def _route(text):
     """
     Return (invoice_number, sheet_name).
 
-    Strategy: extract every number that appears after PO, INV, REF,
-    or Reference on the label. Check ALL of them against the prefix
-    map. Priority order: PO → INV → REF → Reference.
-    This way it doesn't matter which field the number is in —
-    whichever one maps (82/47/2030/10) wins.
+    OCR frequently mangles the label text "PO:" / "INV:" / "REF:"
+    beyond recognition (e.g. "PO:" becomes "0."). So instead of relying
+    on those literal words, scan EVERY standalone number on the whole
+    label and test each one directly against the known prefix map
+    (82/47/10/2030). Whichever number matches wins — it doesn't matter
+    what field it was printed under.
+
+    Excludes tracking numbers (space-separated groups like
+    "8741 6190 9240") and phone numbers (adjacent to parentheses)
+    to reduce false candidates.
     """
+    # Mask out tracking numbers (12-digit, space-grouped) so their
+    # individual 4-digit chunks don't get treated as candidates
+    masked = re.sub(r'\b\d{4}\s\d{4}\s\d{4}\b', ' ', text)
 
-    # All patterns to try, in priority order
-    patterns = [
-        r'PO[\s:;#\.]*([0-9]{4,})',
-        r'INV[\s:;#\.]*([0-9]{4,})',
-        r'REF[\s:;#\.]*([0-9]{4,})',
-        r'Reference[\s:;#\.]*#?[\s:;#\.]*\d*[\s:;#\.]*([0-9]{4,})',
-    ]
+    # Mask out phone numbers like (212) 282-1100
+    masked = re.sub(r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}', ' ', masked)
 
-    # Collect all numbers per pattern, preserving priority order
-    all_numbers = []
-    for pat in patterns:
-        for m in re.finditer(pat, text, re.IGNORECASE):
-            n = m.group(1).strip()
-            if n and n not in all_numbers:
-                all_numbers.append(n)
+    # Mask out ZIP codes: 2-letter state code followed by 5 digits
+    # (e.g. "NY 10017", "IL 60602") — these false-match short prefixes
+    masked = re.sub(r'\b[A-Z]{2}\s+\d{5}\b', ' ', masked)
 
-    # Return first number that maps to a known sheet
-    for n in all_numbers:
+    # Every standalone number 6-10 digits long, in order of appearance.
+    # Real PO/invoice numbers on these labels are always 6+ digits
+    # (108816, 2030445, 47320605, 820951, 203075778) — this floor
+    # also naturally excludes zip codes, TRK# codes, and short IDs.
+    candidates = re.findall(r'\b(\d{6,10})\b', masked)
+
+    # Dedupe while preserving order
+    seen = []
+    for n in candidates:
+        if n not in seen:
+            seen.append(n)
+
+    # Return the first number whose prefix matches a known sheet
+    for n in seen:
         sheet = _sheet_from_invoice(n)
         if sheet:
             return n, sheet
 
-    # Nothing mapped — return first number found, no sheet
-    return (all_numbers[0] if all_numbers else ""), ""
-
+    # Nothing matched — return the first number for the cell, no sheet
+    return (seen[0] if seen else ""), ""
 
 def _is_zales(text):
     return "ZALES" in text.upper()
