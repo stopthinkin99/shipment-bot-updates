@@ -141,11 +141,21 @@ def _route(text):
         if n not in seen:
             seen.append(n)
 
-    # Return the first number whose prefix matches a known sheet
+    # Return the first number whose prefix matches a known sheet.
+    # Also test with leading zeros stripped — OCR frequently mangles
+    # "PO:" into a literal leading "0" glued onto the number itself
+    # (e.g. "PO: 47320604" -> "047300604"), which would otherwise
+    # break the prefix match.
     for n in seen:
         sheet = _sheet_from_invoice(n)
         if sheet:
             return n, sheet
+        if n.startswith("0"):
+            stripped = n.lstrip("0")
+            if stripped:
+                sheet = _sheet_from_invoice(stripped)
+                if sheet:
+                    return stripped, sheet
 
     # Nothing matched — return the first number for the cell, no sheet
     return (seen[0] if seen else ""), ""
