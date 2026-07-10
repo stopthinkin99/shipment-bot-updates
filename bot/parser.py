@@ -88,18 +88,38 @@ def _gather_numbers(text):
 def _route(text):
     """
     Return (invoice_number, sheet_name).
-    Picks the first candidate number whose prefix maps to a known sheet;
-    that same number is what we write into the invoice column.
-    """
-    candidates = _gather_numbers(text)
 
-    for n in candidates:
+    Strategy: extract every number that appears after PO, INV, REF,
+    or Reference on the label. Check ALL of them against the prefix
+    map. Priority order: PO → INV → REF → Reference.
+    This way it doesn't matter which field the number is in —
+    whichever one maps (82/47/2030/10) wins.
+    """
+
+    # All patterns to try, in priority order
+    patterns = [
+        r'PO[\s:;#\.]*([0-9]{4,})',
+        r'INV[\s:;#\.]*([0-9]{4,})',
+        r'REF[\s:;#\.]*([0-9]{4,})',
+        r'Reference[\s:;#\.]*#?[\s:;#\.]*\d*[\s:;#\.]*([0-9]{4,})',
+    ]
+
+    # Collect all numbers per pattern, preserving priority order
+    all_numbers = []
+    for pat in patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            n = m.group(1).strip()
+            if n and n not in all_numbers:
+                all_numbers.append(n)
+
+    # Return first number that maps to a known sheet
+    for n in all_numbers:
         sheet = _sheet_from_invoice(n)
         if sheet:
             return n, sheet
 
-    # nothing mapped -> keep first number for the cell, but no sheet
-    return (candidates[0] if candidates else ""), ""
+    # Nothing mapped — return first number found, no sheet
+    return (all_numbers[0] if all_numbers else ""), ""
 
 
 def _is_zales(text):
