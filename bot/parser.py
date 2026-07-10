@@ -127,6 +127,14 @@ def _route(text):
     # also naturally excludes zip codes, TRK# codes, and short IDs.
     candidates = re.findall(r'\b(\d{6,10})\b', masked)
 
+    # ALSO try merging two adjacent digit groups separated by a single
+    # space or newline (e.g. OCR splits "47320604" into "4732 0604").
+    # Only keep merges that land in the realistic 6-10 digit range.
+    for m in re.finditer(r'\b(\d{2,6})[ \n](\d{2,6})\b', masked):
+        merged = m.group(1) + m.group(2)
+        if 6 <= len(merged) <= 10:
+            candidates.append(merged)
+
     # Dedupe while preserving order
     seen = []
     for n in candidates:
