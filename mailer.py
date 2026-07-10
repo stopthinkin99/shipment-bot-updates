@@ -7,7 +7,7 @@ installed on the PC — same security boundary as the user's email.
 import datetime
 
 # Alert recipient — update this when you have the address
-ALERT_TO = "finance@unicreation.com"   # <-- change this
+ALERT_TO = "shipping@unidesignusa.com"   # <-- change this
 
 def send_alert(pdf_path: str, data: dict, reason: str):
     """
