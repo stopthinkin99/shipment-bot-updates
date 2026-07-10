@@ -1,6 +1,5 @@
 """
 mailer.py  —  Sends alert emails via local Outlook (win32com).
-Zero external SMTP, zero API. Uses Outlook desktop app on the PC.
 """
 
 import datetime
@@ -15,19 +14,29 @@ def send_alert(pdf_path: str, data: dict, reason: str):
         outlook = win32.Dispatch("Outlook.Application")
         mail = outlook.CreateItem(0)
 
-        # Set recipient explicitly via Recipients collection
-        recipient = mail.Recipients.Add(ALERT_TO)
-        recipient.Type = 1   # 1 = olTo
-        mail.Recipients.ResolveAll()
-
-        mail.Subject = f"[Shipment Bot] Manual Review Needed — {_basename(pdf_path)}"
+        mail.To      = ALERT_TO
+        mail.Subject = f"[Shipment Bot] Manual Review — {_basename(pdf_path)}"
         mail.Body    = _body(pdf_path, data, reason)
+
+        # SentOnBehalfOfName not needed — just send directly
         mail.Send()
 
         print(f"[MAIL] Alert sent to {ALERT_TO}")
 
     except Exception as e:
-        print(f"[MAIL] Could not send alert email: {e}")
+        # Fallback: save as draft so nothing is lost
+        try:
+            import win32com.client as win32
+            outlook = win32.Dispatch("Outlook.Application")
+            mail = outlook.CreateItem(0)
+            mail.To      = ALERT_TO
+            mail.Subject = f"[Shipment Bot] Manual Review — {_basename(pdf_path)}"
+            mail.Body    = _body(pdf_path, data, reason)
+            mail.Save()   # saves to Drafts folder
+            print(f"[MAIL] Could not send — saved to Outlook Drafts instead.")
+        except Exception as e2:
+            print(f"[MAIL] Email failed entirely: {e2}")
+
         print(f"[MAIL] Manual review needed for: {pdf_path}")
         print(f"[MAIL] Reason: {reason}")
 
