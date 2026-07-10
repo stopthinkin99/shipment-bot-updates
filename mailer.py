@@ -19,16 +19,6 @@ def send_alert(pdf_path: str, data: dict, reason: str):
         mapi.Logon()
 
         mail = outlook.CreateItem(0)
-
-        # Pin the sender account explicitly so it always uses the right one
-        for account in mapi.Accounts:
-            if account.SmtpAddress.lower() == ALERT_FROM.lower():
-                mail._oleobj_.Invoke(
-                    *(64209, 0, 8, 0, account)   # PR_SENT_REPRESENTING
-                )
-                mail.SentOnBehalfOfName = account.SmtpAddress
-                break
-
         mail.To      = ALERT_TO
         mail.Subject = f"[Shipment Bot] Manual Review — {_basename(pdf_path)}"
         mail.Body    = _body(pdf_path, data, reason)
