@@ -35,7 +35,7 @@ from pathlib import Path
 # ------------------------------------------------------------------ #
 GITHUB_OWNER  = "stopthinkin99"          # e.g. "aayan-boradia"
 GITHUB_REPO   = "shipment-bot-updates"          # your private repo name
-GITHUB_TOKEN  = "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"       # read-only PAT
+GITHUB_TOKEN  = "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"       # read-only PAT
 GITHUB_BRANCH = "main"
 
 # Local version file — sits next to the .exe
