@@ -1,30 +1,43 @@
 """
 mailer.py  —  Sends alert emails via local Outlook (win32com).
+From: aayan.boradia@unidesignusa.com
+To:   shipping@unidesignusa.com
 """
 
 import datetime
 
-ALERT_TO = "shipping@unidesignusa.com"
+ALERT_FROM = "aayan.boradia@unidesignusa.com"
+ALERT_TO   = "shipping@unidesignusa.com"
 
 
 def send_alert(pdf_path: str, data: dict, reason: str):
     try:
         import win32com.client as win32
 
-        outlook = win32.Dispatch("Outlook.Application")
+        outlook  = win32.Dispatch("Outlook.Application")
+        mapi     = outlook.GetNamespace("MAPI")
+        mapi.Logon()
+
         mail = outlook.CreateItem(0)
+
+        # Pin the sender account explicitly so it always uses the right one
+        for account in mapi.Accounts:
+            if account.SmtpAddress.lower() == ALERT_FROM.lower():
+                mail._oleobj_.Invoke(
+                    *(64209, 0, 8, 0, account)   # PR_SENT_REPRESENTING
+                )
+                mail.SentOnBehalfOfName = account.SmtpAddress
+                break
 
         mail.To      = ALERT_TO
         mail.Subject = f"[Shipment Bot] Manual Review — {_basename(pdf_path)}"
         mail.Body    = _body(pdf_path, data, reason)
-
-        # SentOnBehalfOfName not needed — just send directly
         mail.Send()
 
-        print(f"[MAIL] Alert sent to {ALERT_TO}")
+        print(f"[MAIL] Alert sent: {ALERT_FROM} -> {ALERT_TO}")
 
     except Exception as e:
-        # Fallback: save as draft so nothing is lost
+        print(f"[MAIL] Send failed ({e}), saving to Drafts...")
         try:
             import win32com.client as win32
             outlook = win32.Dispatch("Outlook.Application")
@@ -32,11 +45,10 @@ def send_alert(pdf_path: str, data: dict, reason: str):
             mail.To      = ALERT_TO
             mail.Subject = f"[Shipment Bot] Manual Review — {_basename(pdf_path)}"
             mail.Body    = _body(pdf_path, data, reason)
-            mail.Save()   # saves to Drafts folder
-            print(f"[MAIL] Could not send — saved to Outlook Drafts instead.")
+            mail.Save()
+            print(f"[MAIL] Saved to Drafts — please send manually.")
         except Exception as e2:
-            print(f"[MAIL] Email failed entirely: {e2}")
-
+            print(f"[MAIL] Draft also failed: {e2}")
         print(f"[MAIL] Manual review needed for: {pdf_path}")
         print(f"[MAIL] Reason: {reason}")
 
