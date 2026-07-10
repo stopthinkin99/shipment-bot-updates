@@ -1,0 +1,9 @@
+﻿*.xlsx
+*.xlsm
+*.pdf
+config.json
+__pycache__/
+*.pyc
+ShipmentLabels/
+dist/
+bundle/
