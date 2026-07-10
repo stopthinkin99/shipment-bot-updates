@@ -14,6 +14,7 @@ import time
 import datetime
 import winreg
 from pathlib import Path
+from cleanup import start_cleanup_thread
 
 # ------------------------------------------------------------------ #
 #  PATHS
@@ -185,7 +186,6 @@ class App(tk.Tk):
         rows = [
             ("Labels folder",  "var_folder", self._pick_folder),
             ("Excel file",     "var_excel",  self._pick_excel),
-            ("Alert email",    "var_email",  None),
         ]
         for i, (label, attr, cmd) in enumerate(rows):
             tk.Label(frm, text=label + ":", bg=self.C_BG,
@@ -297,14 +297,8 @@ class App(tk.Tk):
         self._cfg = {
             "watch_folder": self.var_folder.get().strip(),
             "excel_path":   self.var_excel.get().strip(),
-            "alert_email":  self.var_email.get().strip(),
         }
         save_config(self._cfg)
-        try:
-            import mailer
-            mailer.ALERT_TO = self._cfg["alert_email"]
-        except Exception:
-            pass
 
     def _start(self):
         folder = self.var_folder.get().strip()
@@ -322,6 +316,9 @@ class App(tk.Tk):
 
         self._watcher = WatcherThread(folder, self._log)
         self._watcher.start()
+
+        # Start 30-day cleanup thread (runs now, then every 24 hours)
+        start_cleanup_thread(lambda: self.var_folder.get().strip(), self._log)
 
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
