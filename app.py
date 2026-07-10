@@ -1,19 +1,32 @@
 """
 app.py  —  Uni Creation Shipment Bot
 Single-window desktop application. Tkinter only (built into Python).
-Auto-starts on Windows login. Checks for updates on launch.
+Auto-starts on Windows login. Always pulls latest bot code from
+GitHub on startup — no manual copying, no version comparison.
 """
 
-import json
-import os
 import sys
+import os
+from pathlib import Path
+
+_APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) \
+           else Path(__file__).parent
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
+
+# ------------------------------------------------------------------ #
+#  SYNC FIRST — before importing anything that depends on bot files
+# ------------------------------------------------------------------ #
+from updater import sync_all_files
+sync_all_files(print)   # console log; GUI log wired in after window opens
+
+import json
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import time
 import datetime
 import winreg
-from pathlib import Path
 from cleanup import start_cleanup_thread
 
 # ------------------------------------------------------------------ #
@@ -255,24 +268,12 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
 
     # ---------------------------------------------------------------- #
-    #  STARTUP (update check then auto-start)
+    #  STARTUP (sync already ran before window opened — just auto-start)
     # ---------------------------------------------------------------- #
     def _startup(self):
-        def _run():
-            try:
-                from updater import check_and_update, restart_app
-                should_restart = check_and_update(self._log)
-                if should_restart:
-                    self.after(1500, restart_app)
-                    return
-            except Exception as e:
-                self._log(f"[Updater] Skipped: {e}")
-
-            # Auto-start watcher if config is already filled
-            if self._cfg.get("watch_folder") and self._cfg.get("excel_path"):
-                self.after(0, self._start)
-
-        threading.Thread(target=_run, daemon=True).start()
+        self._log("Synced with GitHub on launch.")
+        if self._cfg.get("watch_folder") and self._cfg.get("excel_path"):
+            self._start()
 
     # ---------------------------------------------------------------- #
     #  ACTIONS
