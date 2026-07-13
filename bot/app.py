@@ -102,20 +102,22 @@ class _LabelHandler:
         if not path.lower().endswith(".pdf"):
             return
         self.log(f"New label: {os.path.basename(path)}")
-        time.sleep(0.8)          # let file finish writing
+        time.sleep(0.8)
         try:
-            # Re-import each time so hot-updated processor is used
             import importlib, processor
             importlib.reload(processor)
-            data = processor.process_label(path)
-            self._log_data(data)
+            records = processor.process_label(path)
+            if records:
+                for i, data in enumerate(records):
+                    if len(records) > 1:
+                        self.log(f"  ── Page {i+1} ──")
+                    self._log_data(data)
             self.log(f"✓  {os.path.basename(path)}")
         except Exception as e:
             self.log(f"✗  {os.path.basename(path)}: {e}")
 
+
     def _log_data(self, data: dict):
-        """Print each extracted field on its own line, so it's easy
-        to scan what the bot got vs. what needs a manual check."""
         if not data:
             return
         fields = [

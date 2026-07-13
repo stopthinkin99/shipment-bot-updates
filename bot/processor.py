@@ -11,23 +11,21 @@ EXCEL_PATH = r"C:\Users\aayan.boradia\Downloads\TRACKING_SHIPMENT.xlsx"
 
 
 def process_file(file_path, excel_path=None, done_folder=None):
-    # Use app-provided paths if given, else fall back to defaults
-    _excel = excel_path or r"C:\Users\aayan.boradia\Downloads\TRACKING_SHIPMENT.xlsx"
+    _excel = excel_path  or r"C:\Users\aayan.boradia\Downloads\TRACKING_SHIPMENT.xlsx"
     _done  = done_folder or r"C:\Users\aayan.boradia\Downloads\ShipmentLabels\Done"
-    
+
     print(f"[INFO] Processing: {file_path}")
     try:
         records = parse_label(file_path)
 
         if not records:
             print(f"[WARN] No records extracted from {file_path}")
-            return
+            return []
 
         for record in records:
             if not record.get("sheet"):
                 print(f"[SKIP] Could not determine sheet for invoice '{record.get('invoice')}' — manual review needed")
                 continue
-
             if not record.get("tracking_number"):
                 print(f"[WARN] No tracking number found in {file_path}")
 
@@ -38,8 +36,10 @@ def process_file(file_path, excel_path=None, done_folder=None):
         shutil.move(file_path, os.path.join(_done, os.path.basename(file_path)))
         print(f"[DONE] Moved to {_done}")
 
+        return records   # ← this is the only new line
+
     except Exception as e:
         print(f"[ERROR] Failed on {file_path}: {e}")
+        return []
 
-# Alias
 process_label = process_file
