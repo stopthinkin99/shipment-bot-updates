@@ -1,356 +1,107 @@
 import re
-import datetime
+from extractor_core import extract_data_from_file
+from po_tracking import get_po_and_tracking
+from zales_extractor import extract_zales_from_file, is_zales_label
+import fitz
+import cv2
+import numpy as np
+import pytesseract
+import os
 
+pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
+os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
 
-# ------------------------------------------------------------------ #
-#  LOOKUP TABLES
-# ------------------------------------------------------------------ #
-
-# ORIGIN ID -> shipping company.
-#   OGSA        = Brinx Fedex   -> carrier "BX FX ..."
-#   NYSA / NYCA = MalcaAmit     -> carrier "M / E"
-ORIGIN_ID_MAP = {
-    "OGSA": "BRINX_FEDEX",
-    "NYSA": "MALCAAMIT",
-    "NYCA": "MALCAAMIT",
-}
-
-# FedEx service text -> short code used after the "BX FX" prefix
-FEDEX_SERVICE_SHORT = {
-    "PRIORITY OVERNIGHT": "P/O",
-    "STANDARD OVERNIGHT": "S/O",
-}
-
-# Routing: leading digits of the INV/PO/REF number -> Excel sheet.
-# Order = most specific first (2030 before 20-anything, etc.)
-INVOICE_PREFIX_SHEET = [
+# ── Invoice prefix → sheet routing (unchanged from original) ──────────────
+PREFIX_SHEET = [
     ("2030", "EMBY"),
     ("82",   "FENIX"),
     ("47",   "FENIX"),
     ("10",   "UNI"),
 ]
 
-# Where routing / invoice numbers can appear on a label. Checked in
-# THIS priority order (PO first, Reference last).
-NUMBER_MARKERS = [
-    r'PO[:\s#]*([0-9]{3,})',
-    r'INV[:\s#]*([0-9]{3,})',
-    r'REF[:\s#]*([0-9]{3,})',
-    r'Reference\s*#?\s*\d*[:\s]*([0-9]{3,})',
-]
-
-
-# ------------------------------------------------------------------ #
-#  BASIC FIELD HELPERS
-# ------------------------------------------------------------------ #
-
-def _find_origin_id(text):
-    """Grab the ORIGIN ID code (OGSA, NYSA, NYCA...) from the header."""
-    m = re.search(r'ORIGIN\s*ID[:\s]*([A-Z0-9]+)', text, re.IGNORECASE)
-    return m.group(1).strip().upper() if m else ""
-
-
-def _find_date(text):
-    """
-    Ship date in compact form, e.g. 09JUL26 / 06JUL26.
-    We match the DATE VALUE directly instead of relying on the words
-    'SHIP DATE', because OCR often mangles them (e.g. 'Son DATE:').
-
-    If no date can be found anywhere on the label (common on UPS/Zales
-    labels which don't always print a ship date), fall back to
-    TODAY'S date — the date the label was actually dropped into the
-    watch folder — in the same DDMONYY format used elsewhere.
-    """
-    # Prefer a value sitting next to the word DATE
-    m = re.search(r'DATE[:;\s]*([0-9]{1,2}[A-Z]{3}[0-9]{2,4})',
-                  text, re.IGNORECASE)
-    if m:
-        return m.group(1).upper()
-
-    # Fallback: any compact DDMONYY token anywhere on the label
-    m = re.search(r'\b([0-9]{1,2}[A-Z]{3}[0-9]{2,4})\b', text, re.IGNORECASE)
-    if m:
-        return m.group(1).upper()
-
-    # Nothing found on the label at all — use today's date
-    return datetime.date.today().strftime("%d%b%y").upper()
-
-
-def _sheet_from_invoice(number):
-    """Map a number's leading digits to the correct sheet name."""
-    for prefix, sheet in INVOICE_PREFIX_SHEET:
-        if number.startswith(prefix):
+def _route_sheet(invoice_number):
+    for prefix, sheet in PREFIX_SHEET:
+        if str(invoice_number).startswith(prefix):
             return sheet
     return ""
 
+def _quick_ocr(file_path):
+    """Low-res first-page OCR just for Zales detection."""
+    doc = fitz.open(file_path)
+    page = doc.load_page(0)
+    pix = page.get_pixmap(dpi=150)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+    doc.close()
+    if pix.n == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+    return pytesseract.image_to_string(img)
 
-def _gather_numbers(text):
-    """Collect all candidate numbers from PO / INV / REF / Reference."""
-    nums = []
-    for pat in NUMBER_MARKERS:
-        for m in re.finditer(pat, text, re.IGNORECASE):
-            n = m.group(1)
-            if n not in nums:
-                nums.append(n)
-    return nums
-
-
-def _route(text):
+def parse_label(file_path):
     """
-    Return (invoice_number, sheet_name).
-
-    OCR frequently mangles the label text "PO:" / "INV:" / "REF:"
-    beyond recognition (e.g. "PO:" becomes "0."). So instead of relying
-    on those literal words, scan EVERY standalone number on the whole
-    label and test each one directly against the known prefix map
-    (82/47/10/2030). Whichever number matches wins — it doesn't matter
-    what field it was printed under.
-
-    Excludes tracking numbers (space-separated groups like
-    "8741 6190 9240") and phone numbers (adjacent to parentheses)
-    to reduce false candidates.
+    Entry point called by processor.py.
+    Returns a list of dicts (one per page) with keys:
+      sheet, date, ship_to, invoice, carrier, tracking_number, remark
     """
-    # Mask out tracking numbers (12-digit, space-grouped) so their
-    # individual 4-digit chunks don't get treated as candidates
-    masked = re.sub(r'\b\d{4}\s\d{4}\s\d{4}\b', ' ', text)
+    preview = _quick_ocr(file_path)
 
-    # Mask out phone numbers like (212) 282-1100
-    masked = re.sub(r'\(\d{3}\)\s*\d{3}[-\s]?\d{4}', ' ', masked)
+    if is_zales_label(preview):
+        raw_records = extract_zales_from_file(file_path)
+        results = []
+        for r in raw_records:
+            results.append({
+                "sheet":          "FENIX",
+                "date":           r.get("Ship Date", ""),
+                "ship_to":        r.get("Recipient Company", ""),
+                "invoice":        r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
+                "carrier":        "UPS GROUND",
+                "tracking_number": r.get("Tracking Number", ""),
+                "remark":         "Zales Account",
+            })
+        return results
 
-    # Mask out ZIP codes: 2-letter state code followed by 5 digits
-    # (e.g. "NY 10017", "IL 60602") — these false-match short prefixes
-    masked = re.sub(r'\b[A-Z]{2}\s+\d{5}\b', ' ', masked)
+    # Standard flow
+    core_records   = extract_data_from_file(file_path)
+    po_trk_records = get_po_and_tracking(file_path)
 
-    # Every standalone number 6-10 digits long, in order of appearance.
-    # Real PO/invoice numbers on these labels are always 6+ digits
-    # (108816, 2030445, 47320605, 820951, 203075778) — this floor
-    # also naturally excludes zip codes, TRK# codes, and short IDs.
-    candidates = re.findall(r'\b(\d{6,10})\b', masked)
+    results = []
+    for i, r in enumerate(core_records):
+        # Merge PO/tracking from po_tracking.py
+        if i < len(po_trk_records):
+            r["Tracking Number"] = po_trk_records[i]["Tracking Number"]
+            r["PO Number"]       = po_trk_records[i]["PO Number"]
+            # Only fill INV from po_tracking if core didn't already find one
+            if not r.get("INV Number"):
+                r["INV Number"] = po_trk_records[i].get("INV Number", "")
 
-    # ALSO try merging two adjacent digit groups separated by a single
-    # space or newline (e.g. OCR splits "47320604" into "4732 0604").
-    # Only keep merges that land in the realistic 6-10 digit range.
-    for m in re.finditer(r'\b(\d{2,6})[ \n](\d{2,6})\b', masked):
-        merged = m.group(1) + m.group(2)
-        if 6 <= len(merged) <= 10:
-            candidates.append(merged)
+        # Pick best invoice field: PO first, then INV, then REF
+        invoice = r.get("PO Number") or r.get("INV Number") or r.get("Reference", "")
 
-    # Dedupe while preserving order
-    seen = []
-    for n in candidates:
-        if n not in seen:
-            seen.append(n)
+        # Determine carrier from OCR text
+        raw_text = r.get("Full Extracted Text", "")
+        carrier = _detect_carrier(raw_text)
 
-    # Return the first number whose prefix matches a known sheet.
-    # Also test with leading zeros stripped — OCR frequently mangles
-    # "PO:" into a literal leading "0" glued onto the number itself
-    # (e.g. "PO: 47320604" -> "047300604"), which would otherwise
-    # break the prefix match.
-    for n in seen:
-        sheet = _sheet_from_invoice(n)
-        if sheet:
-            return n, sheet
-        if n.startswith("0"):
-            stripped = n.lstrip("0")
-            if stripped:
-                sheet = _sheet_from_invoice(stripped)
-                if sheet:
-                    return stripped, sheet
+        results.append({
+            "sheet":           _route_sheet(invoice),
+            "date":            r.get("Ship Date", ""),
+            "ship_to":         r.get("Recipient Company", ""),
+            "invoice":         invoice,
+            "carrier":         carrier,
+            "tracking_number": r.get("Tracking Number", ""),
+            "remark":          "",
+        })
 
-    # Nothing matched — return the first number for the cell, no sheet
-    return (seen[0] if seen else ""), ""
-
-def _is_zales(text):
-    return "ZALES" in text.upper()
+    return results
 
 
-# ------------------------------------------------------------------ #
-#  CARRIER
-# ------------------------------------------------------------------ #
-
-def _extract_fedex_service(text):
-    """Return the FedEx service line, e.g. 'PRIORITY OVERNIGHT'."""
-    up = text.upper()
-    for service in FEDEX_SERVICE_SHORT:
-        if service in up:
-            return service
-    m = re.search(r'([A-Z][A-Z ]*OVERNIGHT)', up)
-    return m.group(1).strip() if m else ""
-
-
-def _extract_ups_service(text):
-    """Pull a UPS service like 'UPS GROUND', 'UPS 2ND DAY AIR'."""
-    m = re.search(r'(UPS[ A-Z0-9]*?(?:GROUND|DAY|AIR|NEXT|SAVER|EXPEDITED))',
-                  text.upper())
-    if m:
-        return re.sub(r'\s+', ' ', m.group(1)).strip()
-    return "UPS" if "UPS" in text.upper() else ""
-
-
-def _build_carrier(shipper, text):
-    """Carrier column value based on the decoded shipper."""
-    if shipper == "MALCAAMIT":
-        return "M / E"
-
-    if shipper == "BRINX_FEDEX":
-        service = _extract_fedex_service(text)
-        short = FEDEX_SERVICE_SHORT.get(service)
-        if short:
-            return f"BX FX {short}"          # BX FX P/O  /  BX FX S/O
-        if service:
-            return f"BX FX {service.title()}"  # BX FX <other service>
-        return "BX FX"
-
-    # unknown origin -> best-effort raw service
-    return _extract_fedex_service(text)
-
-
-# ------------------------------------------------------------------ #
-#  TRACKING
-# ------------------------------------------------------------------ #
-
-def _extract_tracking(text, zales=False):
-    """
-    FedEx: '8741 6222 5747' (12 digits, spaced).
-    UPS (Zales): '1Z...' 18 chars, often OCR'd with spaces:
-        '1Z Y99 G35 03 1047 0932' -> 1ZY99G350310470932
-    """
-    if zales:
-        m = re.search(r'1Z[\sA-Z0-9]{14,}', text.upper())
-        if m:
-            cleaned = re.sub(r'\s+', '', m.group(0))
-            return cleaned[:18]   # a 1Z tracking number is 18 chars
-
-    m = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', text)
-    return m.group(1) if m else ""
-
-
-# ------------------------------------------------------------------ #
-#  STANDARD (FedEx) SHIP-TO
-# ------------------------------------------------------------------ #
-
-def _standard_ship_to(text):
-    """
-    FedEx 'TO' blocks carry two name lines. RULE: take the SECOND name
-    line (the real recipient). Fall back to the only line if just one.
-        TO  INDIAN DC          <- line 1
-            INDIAN DND         <- line 2  == what we want
-            29 EAST MADISON... <- address (starts with a digit)
-    """
-    m = re.search(r'^[ \t]*TO\b[ \t]*(.*)$', text, re.IGNORECASE | re.MULTILINE)
-    if not m:
-        return ""
-
-    block = text[m.start(1):]
-
-    names = []
-    for line in block.splitlines():
-        c = line.strip()
-        if not c:
-            if names:
-                break
-            continue
-
-        # Strip trailing OCR noise (=, ~, ., -, |, etc.) that Tesseract
-        # sometimes appends to lines near barcodes/dividers
-        c_clean = re.sub(r'[\s=~\.\|_\-]+$', '', c).strip()
-        if not c_clean:
-            continue
-
-        if re.match(r'^[\(\d]', c_clean):   # street address / phone -> stop
-            break
-        if re.match(r"^[A-Z][A-Z0-9 .,&'\-]*$", c_clean):
-            names.append(c_clean)
-        elif names:
-            break
-
-    if len(names) >= 2:
-        return names[1].strip()
-    if names:
-        return names[0].strip()
+def _detect_carrier(text):
+    t = text.upper()
+    if "UPS" in t:
+        if "GROUND" in t:     return "UPS GROUND"
+        if "OVERNIGHT" in t:  return "UPS O/N"
+        return "UPS"
+    if "FEDEX" in t or "ORIGIN ID" in t:
+        if "PRIORITY" in t:   return "BX FX P/O"
+        if "STANDARD" in t:   return "BX FX S/O"
+        if "OVERNIGHT" in t:  return "BX FX O/N"
+        return "FEDEX"
     return ""
-
-
-# ------------------------------------------------------------------ #
-#  ZALES SHIP-TO
-# ------------------------------------------------------------------ #
-
-def _zales_ship_to(text):
-    """
-    Zales 'SHIP TO' is either a store pickup id (ZJC...) + a person, or
-    just a person. If a ZJC id exists -> 'ZJC..., PERSON'. Else -> person.
-    """
-    zjc = re.search(r'\b(ZJC[0-9]+)\b', text.upper())
-
-    name = ""
-    m = re.search(r'SHIP\s*TO[:\s]*(.*)', text, re.IGNORECASE | re.DOTALL)
-    if m:
-        for line in m.group(1).splitlines():
-            c = line.strip()
-            if not c or c.upper().startswith("ZJC"):
-                continue
-            if re.match(r'^[\(\d]', c):     # phone / all-digit line -> skip
-                continue
-            if re.match(r"^[A-Za-z][A-Za-z .,&'\-]+$", c):
-                name = c.upper()
-                break
-
-    if zjc and name:
-        return f"{zjc.group(1)}, {name}"
-    if zjc:
-        return zjc.group(1)
-    return name
-
-
-# ------------------------------------------------------------------ #
-#  MAIN PARSE
-# ------------------------------------------------------------------ #
-
-def parse_label(text):
-
-    data = {
-        "date": "",
-        "ship_to": "",
-        "invoice": "",
-        "carrier": "",
-        "tracking_number": "",
-        "sheet": "",
-        "remark": "",
-        "shipper": "",
-    }
-
-    zales = _is_zales(text)
-
-    # ---- DATE (shared) ---- #
-    data["date"] = _find_date(text)
-
-    # ---- ROUTING NUMBER -> invoice + sheet (shared) ---- #
-    invoice, sheet = _route(text)
-    data["invoice"] = invoice
-    data["sheet"] = sheet
-
-    # ------------------------------------------------------------------ #
-    #  ZALES BRANCH  (UPS delivery, always FENIX)
-    # ------------------------------------------------------------------ #
-    if zales:
-        data["shipper"] = "ZALES"
-        data["ship_to"] = _zales_ship_to(text)
-        data["carrier"] = _extract_ups_service(text)
-        data["tracking_number"] = _extract_tracking(text, zales=True)
-        data["sheet"] = sheet or "FENIX"       # Zales is Fenix (82...)
-        data["remark"] = ("ZALES STORE ACC"
-                          if "ZJC" in text.upper()
-                          else "ZALES CUST ACC")
-        return data
-
-    # ------------------------------------------------------------------ #
-    #  STANDARD BRANCH  (Brinx Fedex / MalcaAmit)
-    # ------------------------------------------------------------------ #
-    origin_id = _find_origin_id(text)
-    data["shipper"] = ORIGIN_ID_MAP.get(origin_id, "")
-
-    data["ship_to"] = _standard_ship_to(text)
-    data["carrier"] = _build_carrier(data["shipper"], text)
-    data["tracking_number"] = _extract_tracking(text)
-
-    return data

@@ -33,7 +33,7 @@ del %BUNDLE%\python\get-pip.py
 echo [4/6] Installing packages into bundle\python...
 %BUNDLE%\python\python.exe -m pip install ^
     watchdog openpyxl pdf2image Pillow numpy ^
-    pytesseract pywin32 ^
+    pytesseract pywin32 certifi ^
     --target %BUNDLE%\python\Lib\site-packages ^
     --no-warn-script-location -q
 echo     Packages installed.
