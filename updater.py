@@ -44,6 +44,10 @@ APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) \
 SYNCED_FILES = [
     "parser.py",
     "extractor.py",
+    "extractor_core.py",
+    "po_tracking.py",
+    "zales_extractor.py",
+    "malka_brinx.py",
     "processor.py",
     "excel_writer.py",
     "mailer.py",
