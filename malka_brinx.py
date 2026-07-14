@@ -23,6 +23,13 @@ SENDER_SHEET = [
     ("FENIX",       "FENIX"),
 ]
 
+def _route_by_sender(text):
+    t = text.upper()
+    for keyword, sheet in SENDER_SHEET:
+        if keyword in t:
+            return sheet
+    return ""
+
 # ── Invoice prefix routing (same as parser.py) ────────────────────────────
 PREFIX_SHEET = [
     ("2030", "EMBY"),
@@ -168,7 +175,7 @@ def _extract_malca_amit(text, filename, page):
 
     # Sheet fallback via invoice prefix
     if not data["sheet"] and data["invoice"]:
-        data["sheet"] = _route_by_invoice(data["invoice"])
+        data["sheet"] = _route_by_sender(data["invoice"])
 
     return data
 
