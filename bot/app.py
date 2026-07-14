@@ -251,30 +251,38 @@ class App(tk.Tk):
                        activebackground=self.C_BG).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(6,0))
 
-        #time setting for auto-email
+        # ── daily summary e-mail ────────────────────────────────────
+        # Own frame (packs its children) so it never clashes with the
+        # grid()-based Setup frame above.
+        dig_frm = tk.Frame(self, bg=self.C_BG)
+        dig_frm.pack(fill="x", padx=16, pady=(0, 6))
+
+        # Time entry that remembers itself between launches
+        # (saved to digest_settings.json by daily_digest, not config.json).
         self.time_var = tk.StringVar(value=load_digest_time())
-        self.time_var.trace_add("write", lambda *a: save_digest_time(self.time_var.get()))
-        tk.Label(self.frame, text="Daily summary time (HH:MM):").pack(side="left")
-        tk.Entry(self.frame, textvariable=self.time_var, width=6).pack(side="left")
+        self.time_var.trace_add(
+            "write", lambda *a: save_digest_time(self.time_var.get()))
+        tk.Label(dig_frm, text="Daily summary time (HH:MM):",
+                 bg=self.C_BG, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(dig_frm, textvariable=self.time_var, width=6,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(6, 12))
 
-        # reuse your existing activity-log function, marshaled to the GUI thread
-        def gui_log(msg):
-            self.root.after(0, lambda: self.log_message(msg))   # <- your log fn name
+        tk.Button(dig_frm, text="Send summary now",
+                  font=("Segoe UI", 8), relief="flat",
+                  bg="#dde3ec", cursor="hand2",
+                  command=lambda: threading.Thread(
+                      target=lambda: run_daily_digest(
+                          self.var_excel.get().strip(), log=self._log),
+                      daemon=True).start()
+                  ).pack(side="left")
 
-        # start once, where you build the window (or in your Start handler)
+        # Scheduler: fires run_daily_digest once a day at the chosen time.
         self.digest_sched = DigestScheduler(
-            get_excel_path=lambda: self.excel_path_var.get(),   # <- your existing var
+            get_excel_path=lambda: self.var_excel.get().strip(),
             get_target=lambda: self.time_var.get(),
-            log=gui_log,
+            log=self._log,
         )
         self.digest_sched.start()
-
-        #optional button
-        tk.Button(self.frame, text="Send summary now",
-          command=lambda: threading.Thread(
-              target=lambda: run_daily_digest(self.excel_path_var.get(), log=gui_log),
-              daemon=True).start()
-         ).pack(side="left")
 
         # ── buttons ─────────────────────────────────────────────────
         btn_frm = tk.Frame(self, bg=self.C_BG)
@@ -386,6 +394,8 @@ class App(tk.Tk):
 
     def _on_close(self):
         self._stop()
+        if getattr(self, "digest_sched", None):
+            self.digest_sched.stop()
         self.destroy()
 
     # ---------------------------------------------------------------- #
