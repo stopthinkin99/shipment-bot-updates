@@ -238,14 +238,15 @@ def _extract_brinks(text, filename, page):
 
     # Recipient: line after "DELIVER TO:"
     for i, line in enumerate(lines):
-        if re.search(r'DELIVER\s*TO\s*:?', line, re.IGNORECASE):
+        if re.match(r'^\s*To\s*:', line, re.IGNORECASE):
             for j in range(i + 1, len(lines)):
                 candidate = lines[j].strip()
                 if not candidate:
                     continue
                 if re.match(r'^[\d\s\-\(\)]+$', candidate):
                     continue
-                # skip single-word garble like "—" or "B"
+                # Strip phone number if OCR merged it on the same line
+                candidate = re.sub(r'\s*Phone\s*:.*$', '', candidate, flags=re.IGNORECASE).strip()
                 if len(candidate) < 4:
                     continue
                 data["ship_to"] = candidate
