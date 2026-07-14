@@ -8,13 +8,9 @@ import pandas as pd
 from openpyxl.styles import Font
 from datetime import datetime
 
-from malka_brinx import (
-    is_malka_brinx_label,
-    extract_malka_brinx_fields
-)
-
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
 os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
+
 
 def deep_scan_preprocess(img):
     scale = 3.5
@@ -92,6 +88,7 @@ def process_extracted_text(raw_text):
                 parts[0] = re.sub(r'[Oo]', '0', parts[0])
                 parts[0] = re.sub(r'[Il]', '1', parts[0])
             return m.group(1) + '/'.join(parts)
+
         line = re.sub(r'(\bC[\s.]*A[\s.]*D[\s:]*)(.*)', fix_cad, line, flags=re.IGNORECASE)
         line = re.sub(r'\b([0-9]{1,5})[Oo]([0-9]{1,5})\b', r'\g<1>0\g<2>', line)
         line = re.sub(r'\b[Oo]([0-9]{3,})\b', r'0\g<1>', line)
@@ -156,9 +153,10 @@ def parse_core_fields(text, filename, page):
         data["Ship Date"] = m.group(1).strip()
 
     # Recipient Company
-    # Strategy 1: "TO <name>" pattern — skip that line, take the next non-empty line
     lines = text.split('\n')
     recipient = ""
+
+    # Strategy 1: "TO <name>" — skip that line, take next non-empty
     for i, line in enumerate(lines):
         if re.match(r'^\s*TO\s+\S+', line, re.IGNORECASE):
             for j in range(i + 1, len(lines)):
@@ -168,7 +166,7 @@ def parse_core_fields(text, filename, page):
                     break
             break
 
-    # Strategy 2: "SHIP TO:" block — take the line after it
+    # Strategy 2: "SHIP TO:" block
     if not recipient:
         for i, line in enumerate(lines):
             if re.match(r'^\s*SHIP\s*TO\s*:', line, re.IGNORECASE):
@@ -179,8 +177,7 @@ def parse_core_fields(text, filename, page):
                         break
                 break
 
-    # Strategy 3: no TO marker at all — find a line that looks like an all-caps company name
-    # (all caps, 2+ words, no digits, appears in first 15 lines)
+    # Strategy 3: all-caps company name in first 15 lines, no digits, 2+ words
     if not recipient:
         for line in lines[:15]:
             line = line.strip()
@@ -191,49 +188,14 @@ def parse_core_fields(text, filename, page):
                 break
 
     data["Recipient Company"] = recipient
-
     return data
 
 
 def process_single_image(img_array, filename, page):
     processed_img = deep_scan_preprocess(img_array)
-
-    # OCR text preserving layout and mixed-case fields
-    full_raw_text = pytesseract.image_to_string(
-        processed_img,
-        config=r"--oem 3 --psm 6"
-    )
-
-    # Your existing confidence-filtered OCR
-    confident_text = extract_confident_lines(
-        processed_img,
-        r"--oem 3 --psm 11"
-    )
-
-    clean_text = process_extracted_text(confident_text)
-
-    # Combine both OCR versions so the special parser receives all fields.
-    combined_text = "\n".join(
-        part for part in [full_raw_text, clean_text] if part.strip()
-    )
-
-    # Detect Malca-Amit / Brinks using unfiltered OCR.
-    if is_malka_brinx_label(combined_text):
-        print(f"[INFO] Malca/Brinks parser selected for {filename}")
-
-        return extract_malka_brinx_fields(
-            combined_text,
-            filename,
-            page
-        )
-
-    print(f"[INFO] Standard parser selected for {filename}")
-
-    return parse_core_fields(
-        clean_text,
-        filename,
-        page
-    )
+    raw_text = extract_confident_lines(processed_img, r'--oem 3 --psm 11')
+    clean_text = process_extracted_text(raw_text)
+    return parse_core_fields(clean_text, filename, page)
 
 
 def extract_data_from_file(file_path):
@@ -267,122 +229,32 @@ def extract_data_from_file(file_path):
 
 
 def save_to_excel(records, output_filename):
-    if not records:
-        return
-
-    valid_sheets = {
-        "EMBY",
-        "FENIX",
-        "UNI",
-        "Extracted Data"
-    }
-
+    df = pd.DataFrame(records)
     col_order = [
-        "Source File",
-        "Page",
-        "Tracking Number",
-        "PO Number",
-        "INV Number",
-        "Memo Number",
-        "Recipient Company",
-        "Reference",
-        "CAD",
-        "Weight",
-        "Ship Date",
-        "Full Extracted Text",
+        "Source File", "Page", "Tracking Number", "PO Number",
+        "Recipient Company", "INV Number", "Reference", "CAD",
+        "Weight", "Ship Date", "Full Extracted Text",
         "Application Run Date and time"
     ]
-
-    records_by_sheet = {}
-
-    for record in records:
-        # The special parser places the desired sheet here.
-        target_sheet = record.get("_Target Sheet", "").strip().upper()
-
-        # Non-Malka labels or unknown senders go to the default sheet.
-        if target_sheet not in valid_sheets:
-            target_sheet = "Extracted Data"
-
-        # Remove internal parser/routing values before Excel output.
-        excel_record = {
-            key: value
-            for key, value in record.items()
-            if not key.startswith("_")
-        }
-
-        records_by_sheet.setdefault(target_sheet, []).append(excel_record)
-
-    existing_sheets = {}
-
+    df = df[[c for c in col_order if c in df.columns]]
     if os.path.exists(output_filename):
         try:
-            existing_sheets = pd.read_excel(
-                output_filename,
-                sheet_name=None
-            )
-        except Exception as exc:
-            print(
-                f"Warning: Could not read existing workbook: {exc}"
-            )
-            existing_sheets = {}
-
-    # Merge new records with existing records sheet by sheet.
-    merged_sheets = dict(existing_sheets)
-
-    for sheet_name, sheet_records in records_by_sheet.items():
-        new_df = pd.DataFrame(sheet_records)
-
-        for column in col_order:
-            if column not in new_df.columns:
-                new_df[column] = ""
-
-        new_df = new_df[col_order]
-
-        if sheet_name in merged_sheets:
-            existing_df = merged_sheets[sheet_name].copy()
-
-            for column in col_order:
-                if column not in existing_df.columns:
-                    existing_df[column] = ""
-
-            existing_df = existing_df[col_order]
-
-            merged_sheets[sheet_name] = pd.concat(
-                [existing_df, new_df],
-                ignore_index=True
-            )
-        else:
-            merged_sheets[sheet_name] = new_df
-
-    with pd.ExcelWriter(
-        output_filename,
-        engine="openpyxl"
-    ) as writer:
-
-        for sheet_name, df in merged_sheets.items():
-            # Excel sheet names cannot exceed 31 characters.
-            safe_sheet_name = str(sheet_name)[:31]
-
-            df.to_excel(
-                writer,
-                index=False,
-                sheet_name=safe_sheet_name
-            )
-
-            worksheet = writer.sheets[safe_sheet_name]
-
-            for cell in worksheet[1]:
-                cell.font = Font(bold=True)
-
-            for column_cells in worksheet.columns:
-                max_length = 0
-                column_letter = column_cells[0].column_letter
-
-                for cell in column_cells:
-                    value = "" if cell.value is None else str(cell.value)
-                    max_length = max(max_length, len(value))
-
-                worksheet.column_dimensions[column_letter].width = min(
-                    max_length + 3,
-                    60
-                )
+            existing_df = pd.read_excel(output_filename)
+            df = pd.concat([existing_df, df], ignore_index=True)
+        except Exception:
+            pass
+    with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Extracted Data')
+        worksheet = writer.sheets['Extracted Data']
+        for cell in worksheet[1]:
+            cell.font = Font(bold=True)
+        for col in worksheet.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 60)

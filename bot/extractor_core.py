@@ -88,6 +88,7 @@ def process_extracted_text(raw_text):
                 parts[0] = re.sub(r'[Oo]', '0', parts[0])
                 parts[0] = re.sub(r'[Il]', '1', parts[0])
             return m.group(1) + '/'.join(parts)
+
         line = re.sub(r'(\bC[\s.]*A[\s.]*D[\s:]*)(.*)', fix_cad, line, flags=re.IGNORECASE)
         line = re.sub(r'\b([0-9]{1,5})[Oo]([0-9]{1,5})\b', r'\g<1>0\g<2>', line)
         line = re.sub(r'\b[Oo]([0-9]{3,})\b', r'0\g<1>', line)
@@ -152,9 +153,10 @@ def parse_core_fields(text, filename, page):
         data["Ship Date"] = m.group(1).strip()
 
     # Recipient Company
-    # Strategy 1: "TO <name>" pattern — skip that line, take the next non-empty line
     lines = text.split('\n')
     recipient = ""
+
+    # Strategy 1: "TO <name>" — skip that line, take next non-empty
     for i, line in enumerate(lines):
         if re.match(r'^\s*TO\s+\S+', line, re.IGNORECASE):
             for j in range(i + 1, len(lines)):
@@ -164,7 +166,7 @@ def parse_core_fields(text, filename, page):
                     break
             break
 
-    # Strategy 2: "SHIP TO:" block — take the line after it
+    # Strategy 2: "SHIP TO:" block
     if not recipient:
         for i, line in enumerate(lines):
             if re.match(r'^\s*SHIP\s*TO\s*:', line, re.IGNORECASE):
@@ -175,8 +177,7 @@ def parse_core_fields(text, filename, page):
                         break
                 break
 
-    # Strategy 3: no TO marker at all — find a line that looks like an all-caps company name
-    # (all caps, 2+ words, no digits, appears in first 15 lines)
+    # Strategy 3: all-caps company name in first 15 lines, no digits, 2+ words
     if not recipient:
         for line in lines[:15]:
             line = line.strip()
@@ -187,7 +188,6 @@ def parse_core_fields(text, filename, page):
                 break
 
     data["Recipient Company"] = recipient
-
     return data
 
 
