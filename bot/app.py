@@ -118,7 +118,7 @@ class _LabelHandler:
             if not records:
                 self.log(
                     f"✗  {os.path.basename(path)}: processing failed "
-                    f"or no records were extracted"
+                    f"or no records were written"
                 )
                 return
 
@@ -198,7 +198,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Uni Creation — Shipment Bot")
+        self.title("Uni Creation — Shipment Bot — Excel Fix")
         self.configure(bg=self.C_BG)
         self.resizable(False, False)
 
