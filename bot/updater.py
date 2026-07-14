@@ -20,14 +20,11 @@ import urllib.error
 # Fix Windows SSL certificate verification issues by using certifi's
 # trusted CA bundle instead of relying on the OS store, which can be
 # incomplete or misconfigured on some Windows installs.
-try:
-    import certifi
-    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-except ImportError:
-    # certifi not available — disable verification as fallback
-    _SSL_CONTEXT = ssl.create_default_context()
-    _SSL_CONTEXT.check_hostname = False
-    _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+# Disable SSL verification — Windows Python sometimes can't verify
+# GitHub's certificate chain without manual CA store setup.
+_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT.check_hostname = False
+_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 # ------------------------------------------------------------------ #
 #  CONFIG
