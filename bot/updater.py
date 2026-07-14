@@ -24,7 +24,10 @@ try:
     import certifi
     _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 except ImportError:
+    # certifi not available — disable verification as fallback
     _SSL_CONTEXT = ssl.create_default_context()
+    _SSL_CONTEXT.check_hostname = False
+    _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 # ------------------------------------------------------------------ #
 #  CONFIG
@@ -59,7 +62,6 @@ SYNCED_FILES = [
 #  GITHUB HELPERS
 # ------------------------------------------------------------------ #
 def _github_get_file(path: str):
-    """Fetch a single file's raw bytes from the repo. None on failure."""
     url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
            f"/contents/{path}?ref={GITHUB_BRANCH}")
     req = urllib.request.Request(url, headers={
@@ -71,7 +73,8 @@ def _github_get_file(path: str):
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as r:
             info = json.loads(r.read())
             return base64.b64decode(info["content"])
-    except Exception:
+    except Exception as e:
+        print(f"[Sync DEBUG] Failed to fetch {path}: {type(e).__name__}: {e}")
         return None
 
 
