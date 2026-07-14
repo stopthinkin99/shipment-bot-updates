@@ -1,17 +1,17 @@
 import re
-from extractor_core import extract_data_from_file
-from po_tracking import get_po_and_tracking
-from zales_extractor import extract_zales_from_file, is_zales_label
+import os
 import fitz
 import cv2
 import numpy as np
 import pytesseract
-import os
+from extractor_core import extract_data_from_file
+from po_tracking import get_po_and_tracking
+from zales_extractor import extract_zales_from_file, is_zales_label
 from malka_brinx import extract_malca_brinks_from_file, is_malca_or_brinks_label
+
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
 os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
 
-# ── Invoice prefix → sheet routing (unchanged from original) ──────────────
 PREFIX_SHEET = [
     ("2030", "EMBY"),
     ("82",   "FENIX"),
@@ -26,98 +26,99 @@ def _route_sheet(invoice_number):
     return ""
 
 def _quick_ocr(file_path):
-    """Low-res first-page OCR just for Zales detection."""
+    """Higher-res first-page OCR for label type detection."""
     doc = fitz.open(file_path)
     page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=150)
+    pix = page.get_pixmap(dpi=250)   # bumped from 150 so MALCA-AMIT is readable
     img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
     doc.close()
     if pix.n == 4:
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-    return pytesseract.image_to_string(img)
+    elif pix.n == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return pytesseract.image_to_string(binarized)
 
 def parse_label(file_path):
-    """
-    Entry point called by processor.py.
-    Returns a list of dicts (one per page) with keys:
-      sheet, date, ship_to, invoice, carrier, tracking_number, remark
-    """
     preview = _quick_ocr(file_path)
 
+    print(f"[DEBUG] Preview text snippet: {preview[:300]}")  # remove once stable
+
+    # ── Zales / UPS ───────────────────────────────────────────────
     if is_zales_label(preview):
+        print("[INFO] Zales label detected")
         raw_records = extract_zales_from_file(file_path)
         results = []
         for r in raw_records:
             results.append({
-                "sheet":          "FENIX",
-                "date":           r.get("Ship Date", ""),
-                "ship_to":        r.get("Recipient Company", ""),
-                "invoice":        r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
-                "carrier":        "UPS GROUND",
+                "sheet":           "FENIX",
+                "date":            r.get("Ship Date", ""),
+                "ship_to":         r.get("Recipient Company", ""),
+                "invoice":         r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
+                "carrier":         "UPS GROUND",
                 "tracking_number": r.get("Tracking Number", ""),
-                "remark":         "Zales Account",
+                "remark":          "Zales Account",
             })
         return results
 
+    # ── Malca-Amit / Brinks ───────────────────────────────────────
     elif is_malca_or_brinks_label(preview):
-        print(["[INFO] Malca/Brinks label detected"])
+        print("[INFO] Malca/Brinks label detected")
         raw_records = extract_malca_brinks_from_file(file_path)
         results = []
         for r in raw_records:
+            # malka_brinx.py returns lowercase keys — use them directly
             results.append({
-                "sheet":          r.get("Sheet", ""),
-                "date":           r.get("date", ""),
-                "ship_to":        r.get("ship_to", ""),
-                "invoice":        r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
-                "carrier":        r.get("Carrier", ""),
-                "tracking_number": r.get("Tracking Number", ""),
-                "remark":         "",
+                "sheet":           r.get("sheet", ""),
+                "date":            r.get("date", ""),
+                "ship_to":         r.get("ship_to", ""),
+                "invoice":         r.get("invoice", ""),
+                "carrier":         r.get("carrier", ""),
+                "tracking_number": r.get("tracking_number", ""),
+                "remark":          r.get("remark", ""),
             })
         return results
 
-    # Standard flow
-    core_records   = extract_data_from_file(file_path)
-    po_trk_records = get_po_and_tracking(file_path)
+    # ── Standard FedEx / UPS flow ─────────────────────────────────
+    else:
+        print("[INFO] Standard label detected")
+        core_records   = extract_data_from_file(file_path)
+        po_trk_records = get_po_and_tracking(file_path)
 
-    results = []
-    for i, r in enumerate(core_records):
-        # Merge PO/tracking from po_tracking.py
-        if i < len(po_trk_records):
-            r["Tracking Number"] = po_trk_records[i]["Tracking Number"]
-            r["PO Number"]       = po_trk_records[i]["PO Number"]
-            # Only fill INV from po_tracking if core didn't already find one
-            if not r.get("INV Number"):
-                r["INV Number"] = po_trk_records[i].get("INV Number", "")
+        results = []
+        for i, r in enumerate(core_records):
+            if i < len(po_trk_records):
+                r["Tracking Number"] = po_trk_records[i]["Tracking Number"]
+                r["PO Number"]       = po_trk_records[i]["PO Number"]
+                if not r.get("INV Number"):
+                    r["INV Number"]  = po_trk_records[i].get("INV Number", "")
 
-        # Pick best invoice field: PO first, then INV, then REF
-        invoice = r.get("PO Number") or r.get("INV Number") or r.get("Reference", "")
+            invoice = r.get("PO Number") or r.get("INV Number") or r.get("Reference", "")
+            carrier = _detect_carrier(r.get("Full Extracted Text", ""))
 
-        # Determine carrier from OCR text
-        raw_text = r.get("Full Extracted Text", "")
-        carrier = _detect_carrier(raw_text)
+            results.append({
+                "sheet":           _route_sheet(invoice),
+                "date":            r.get("Ship Date", ""),
+                "ship_to":         r.get("Recipient Company", ""),
+                "invoice":         invoice,
+                "carrier":         carrier,
+                "tracking_number": r.get("Tracking Number", ""),
+                "remark":          "",
+            })
 
-        results.append({
-            "sheet":           _route_sheet(invoice),
-            "date":            r.get("Ship Date", ""),
-            "ship_to":         r.get("Recipient Company", ""),
-            "invoice":         invoice,
-            "carrier":         carrier,
-            "tracking_number": r.get("Tracking Number", ""),
-            "remark":          "",
-        })
-
-    return results
+        return results
 
 
 def _detect_carrier(text):
     t = text.upper()
     if "UPS" in t:
-        if "GROUND" in t:     return "UPS GROUND"
-        if "OVERNIGHT" in t:  return "UPS O/N"
+        if "GROUND" in t:    return "UPS GROUND"
+        if "OVERNIGHT" in t: return "UPS O/N"
         return "UPS"
     if "FEDEX" in t or "ORIGIN ID" in t:
-        if "PRIORITY" in t:   return "BX FX P/O"
-        if "STANDARD" in t:   return "BX FX S/O"
-        if "OVERNIGHT" in t:  return "BX FX O/N"
+        if "PRIORITY" in t:  return "BX FX P/O"
+        if "STANDARD" in t:  return "BX FX S/O"
+        if "OVERNIGHT" in t: return "BX FX O/N"
         return "FEDEX"
     return ""
