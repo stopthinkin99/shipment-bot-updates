@@ -8,6 +8,8 @@ GitHub on startup — no manual copying, no version comparison.
 import sys
 import os
 from pathlib import Path
+import threading
+from daily_digest import DigestScheduler, run_daily_digest
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) \
            else Path(__file__).parent
@@ -249,6 +251,30 @@ class App(tk.Tk):
                        activebackground=self.C_BG).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(6,0))
 
+        #time setting for auto-email
+        self.time_var = tk.StringVar(value=self.config.get("digest_time", "17:30"))
+        tk.Label(frame, text="Daily summary time (HH:MM):").pack(side="left")
+        tk.Entry(frame, textvariable=self.time_var, width=6).pack(side="left")
+
+        # reuse your existing activity-log function, marshaled to the GUI thread
+        def gui_log(msg):
+            self.root.after(0, lambda: self.log_message(msg))   # <- your log fn name
+
+        # start once, where you build the window (or in your Start handler)
+        self.digest_sched = DigestScheduler(
+            get_excel_path=lambda: self.excel_path_var.get(),   # <- your existing var
+            get_target=lambda: self.time_var.get(),
+            log=gui_log,
+        )
+        self.digest_sched.start()
+
+        #optional button
+        tk.Button(frame, text="Send summary now",
+          command=lambda: threading.Thread(
+              target=lambda: run_daily_digest(self.excel_path_var.get(), log=gui_log),
+              daemon=True).start()
+         ).pack(side="left")
+
         # ── buttons ─────────────────────────────────────────────────
         btn_frm = tk.Frame(self, bg=self.C_BG)
         btn_frm.pack(fill="x", padx=16, pady=(4, 8))
@@ -287,6 +313,8 @@ class App(tk.Tk):
         self.log_box["yscrollcommand"] = sb.set
         self.log_box.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+
 
     # ---------------------------------------------------------------- #
     #  STARTUP (sync already ran before window opened — just auto-start)
