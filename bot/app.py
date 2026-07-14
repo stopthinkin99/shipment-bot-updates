@@ -9,7 +9,7 @@ import sys
 import os
 from pathlib import Path
 import threading
-from daily_digest import DigestScheduler, run_daily_digest
+from daily_digest import DigestScheduler, run_daily_digest, load_digest_time, save_digest_time
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) \
            else Path(__file__).parent
@@ -252,7 +252,8 @@ class App(tk.Tk):
             row=3, column=0, columnspan=3, sticky="w", pady=(6,0))
 
         #time setting for auto-email
-        self.time_var = tk.StringVar(value=self.config.get("digest_time", "17:30"))
+        self.time_var = tk.StringVar(value=load_digest_time())
+        self.time_var.trace_add("write", lambda *a: save_digest_time(self.time_var.get()))
         tk.Label(frame, text="Daily summary time (HH:MM):").pack(side="left")
         tk.Entry(frame, textvariable=self.time_var, width=6).pack(side="left")
 
