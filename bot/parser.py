@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import pytesseract
 import os
-
+from malca_amit import extract_malca_brinks_from_file, is_malca_or_brinks_label
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
 os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
 
@@ -56,6 +56,22 @@ def parse_label(file_path):
                 "carrier":        "UPS GROUND",
                 "tracking_number": r.get("Tracking Number", ""),
                 "remark":         "Zales Account",
+            })
+        return results
+
+    elif is_malca_or_brinks_label(preview):
+        print(["[INFO] Malca/Brinks label detected"])
+        raw_records = extract_malca_brinks_from_file(file_path)
+        results = []
+        for r in raw_records:
+            results.append({
+                "sheet":          r.get("Sheet", ""),
+                "date":           r.get("date", ""),
+                "ship_to":        r.get("ship_to", ""),
+                "invoice":        r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
+                "carrier":        r.get("Carrier", ""),
+                "tracking_number": r.get("Tracking Number", ""),
+                "remark":         "",
             })
         return results
 
