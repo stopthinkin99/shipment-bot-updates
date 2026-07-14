@@ -254,8 +254,8 @@ class App(tk.Tk):
         #time setting for auto-email
         self.time_var = tk.StringVar(value=load_digest_time())
         self.time_var.trace_add("write", lambda *a: save_digest_time(self.time_var.get()))
-        tk.Label(frame, text="Daily summary time (HH:MM):").pack(side="left")
-        tk.Entry(frame, textvariable=self.time_var, width=6).pack(side="left")
+        tk.Label(self.frame, text="Daily summary time (HH:MM):").pack(side="left")
+        tk.Entry(self.frame, textvariable=self.time_var, width=6).pack(side="left")
 
         # reuse your existing activity-log function, marshaled to the GUI thread
         def gui_log(msg):
@@ -270,7 +270,7 @@ class App(tk.Tk):
         self.digest_sched.start()
 
         #optional button
-        tk.Button(frame, text="Send summary now",
+        tk.Button(self.frame, text="Send summary now",
           command=lambda: threading.Thread(
               target=lambda: run_daily_digest(self.excel_path_var.get(), log=gui_log),
               daemon=True).start()
