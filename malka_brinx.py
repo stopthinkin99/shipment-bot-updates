@@ -48,12 +48,10 @@ def _pdf_to_images(file_path):
 
 
 def _ocr_both(img_cv):
-    """Run PSM6 (layout-aware) and PSM11 (sparse) and return both."""
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY) if len(img_cv.shape) == 3 else img_cv
     _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     psm6  = pytesseract.image_to_string(binarized, config='--oem 3 --psm 6')
     psm11 = pytesseract.image_to_string(binarized, config='--oem 3 --psm 11')
-    # Combine both — psm6 first for layout, psm11 catches split fields
     return psm6 + "\n" + psm11
 
 
@@ -70,12 +68,6 @@ def is_malca_or_brinks_label(text):
 
 
 def _parse_date(text):
-    """
-    Handles formats seen in real OCR:
-      - "Jul 13, 2026"  or  "Jul 13, 6" (OCR truncation)
-      - "13-Jul-2026"
-      - "13a" style garbage → ignored
-    """
     # Full: Jul 13, 2026
     m = re.search(
         r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*[\s.]+(\d{1,2}),?\s+(20\d{2})',
@@ -105,31 +97,33 @@ def _parse_date(text):
     return ""
 
 
+def _clean_recipient(candidate):
+    """Strip phone numbers and junk from a recipient line."""
+    # Remove "Phone: xxxxxxxxxx" and everything after
+    candidate = re.sub(r'\s*Phone\s*:.*$', '', candidate, flags=re.IGNORECASE)
+    # Remove standalone phone numbers at end of line
+    candidate = re.sub(r'\s+\d{7,}$', '', candidate)
+    return candidate.strip()
+
+
 def _extract_malca_amit(text, filename, page):
-    """
-    Real OCR from label7 (Malca-Amit):
-      PSM6:  "EMBY INTERNATIONAL INC Req. Pickup Date:"
-             "} INV: 201053956"
-             "To: LAFAYETTE"
-             "STULLER INC Phone: 13372627700"
-             "Shipment# 7389729"  (PSM11 cleaner than PSM6 "shionentt 7389729")
-    """
     data = {
-        "Source File":   filename,
-        "Page":          page,
-        "carrier":       "MALCA-AMIT",
-        "sheet":         "",
-        "date":          "",
-        "ship_to":       "",
-        "invoice":       "",
+        "Source File":     filename,
+        "Page":            page,
+        "carrier":         "MALCA-AMIT",
+        "sheet":           "",
+        "date":            "",
+        "ship_to":         "",
+        "invoice":         "",
         "tracking_number": "",
-        "remark":        "",
+        "remark":          "",
         "Full Extracted Text": text,
         "Application Run Date and time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    # Sheet: sender name appears in the top block before "To:"
     lines = text.split('\n')
+
+    # Sheet: sender name in header block before "To:"
     to_idx = next(
         (i for i, l in enumerate(lines) if re.match(r'^\s*To\s*:', l, re.IGNORECASE)),
         len(lines)
@@ -137,10 +131,10 @@ def _extract_malca_amit(text, filename, page):
     header_text = '\n'.join(lines[:to_idx])
     data["sheet"] = _route_by_sender(header_text)
 
-    # Date: "Req. Pickup Date: Jul 13, 2026" or bare "Jul 13, 2026"
+    # Date
     data["date"] = _parse_date(text)
 
-    # INV number: "INV: 201053956" — OCR sometimes prepends "}" or spaces
+    # INV number: "INV: 201053956"
     m = re.search(r'\bINV\s*[:#]?\s*([0-9]{4,})', text, re.IGNORECASE)
     if m:
         data["invoice"] = m.group(1).strip()
@@ -157,12 +151,12 @@ def _extract_malca_amit(text, filename, page):
         if m:
             data["invoice"] = m.group(1).strip()
 
-    # Tracking: "Shipment# 7389729" — PSM11 gives this cleanly
+    # Tracking: "Shipment#: 7389729"
     m = re.search(r'Shipment\s*#\s*[:\-]?\s*([0-9]{5,})', text, re.IGNORECASE)
     if m:
         data["tracking_number"] = m.group(1).strip()
 
-    # Recipient: line after "To: <city>" — skip city line, take company
+    # Recipient: line after "To: <city>" — skip city, take company, strip phone
     for i, line in enumerate(lines):
         if re.match(r'^\s*To\s*:', line, re.IGNORECASE):
             for j in range(i + 1, len(lines)):
@@ -172,6 +166,9 @@ def _extract_malca_amit(text, filename, page):
                 # skip phone-only lines
                 if re.match(r'^[\d\s\-\(\)]+$', candidate):
                     continue
+                candidate = _clean_recipient(candidate)
+                if len(candidate) < 4:
+                    continue
                 data["ship_to"] = candidate
                 break
             break
@@ -180,27 +177,16 @@ def _extract_malca_amit(text, filename, page):
 
 
 def _extract_brinks(text, filename, page):
-    """
-    Real OCR from label8 (Brinks):
-      PSM6:  "Uni-Creation INC. Global Services"
-             "PO # 07102026-1,1-2"
-             "DELIVER TO:"
-             "Uni Design Jewellery Pvt. Ltd (Unit ID)"
-             "Tracking No. 11017170336"
-      PSM11: "Estimated Pu Dat  13-Jul-2026"
-             "HAWB Number  ' 101 -1170336"  (garbled)
-             "Tracking No. 11017170336"     (clean)
-    """
     data = {
-        "Source File":   filename,
-        "Page":          page,
-        "carrier":       "BRINKS",
-        "sheet":         "",
-        "date":          "",
-        "ship_to":       "",
-        "invoice":       "",
+        "Source File":     filename,
+        "Page":            page,
+        "carrier":         "BRINKS",
+        "sheet":           "",
+        "date":            "",
+        "ship_to":         "",
+        "invoice":         "",
         "tracking_number": "",
-        "remark":        "",
+        "remark":          "",
         "Full Extracted Text": text,
         "Application Run Date and time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -215,20 +201,20 @@ def _extract_brinks(text, filename, page):
     header_text = '\n'.join(lines[:deliver_idx])
     data["sheet"] = _route_by_sender(header_text)
 
-    # Date: "13-Jul-2026" from PSM11 "Estimated Pu Dat  13-Jul-2026"
+    # Date
     data["date"] = _parse_date(text)
 
-    # PO: "PO # 07102026-1,1-2" — include dashes and commas
+    # PO: "PO # 07102026-1,1-2"
     m = re.search(r'PO\s*#\s*([A-Z0-9][A-Z0-9\-,\.]+)', text, re.IGNORECASE)
     if m:
         data["invoice"] = m.group(1).strip()
 
-    # Tracking: "Tracking No. 11017170336" — this is clean in both PSM modes
+    # Tracking: "Tracking No. 11017170336"
     m = re.search(r'Tracking\s*No\.?\s*[:\-]?\s*([0-9]{8,})', text, re.IGNORECASE)
     if m:
         data["tracking_number"] = m.group(1).strip()
 
-    # HAWB fallback — OCR garbles this but try anyway, strip non-digits
+    # HAWB fallback
     if not data["tracking_number"]:
         m = re.search(r'HAWB\s*Number\s*[:\-]?\s*([\d\s\-]{6,})', text, re.IGNORECASE)
         if m:
@@ -238,15 +224,16 @@ def _extract_brinks(text, filename, page):
 
     # Recipient: line after "DELIVER TO:"
     for i, line in enumerate(lines):
-        if re.match(r'^\s*To\s*:', line, re.IGNORECASE):
+        if re.search(r'DELIVER\s*TO\s*:?', line, re.IGNORECASE):
             for j in range(i + 1, len(lines)):
                 candidate = lines[j].strip()
                 if not candidate:
                     continue
                 if re.match(r'^[\d\s\-\(\)]+$', candidate):
                     continue
-                # Strip phone number if OCR merged it on the same line
-                candidate = re.sub(r'\s*Phone\s*:.*$', '', candidate, flags=re.IGNORECASE).strip()
+                if len(candidate) < 4:
+                    continue
+                candidate = _clean_recipient(candidate)
                 if len(candidate) < 4:
                     continue
                 data["ship_to"] = candidate
@@ -257,10 +244,6 @@ def _extract_brinks(text, filename, page):
 
 
 def extract_malca_brinks_from_file(file_path):
-    """
-    Entry point called by parser.py.
-    Returns list of dicts (one per page), same shape as other extractors.
-    """
     filename = os.path.basename(file_path)
     images = _pdf_to_images(file_path)
     records = []
