@@ -184,10 +184,9 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Uni Creation — Shipment Bot")
+        self.title("Uni Creation — Shipment Bot -FIXED BUILD")
         self.configure(bg=self.C_BG)
         self.resizable(False, False)
-
         self._cfg     = load_config()
         self._watcher = None
         self._version = VERSION_FILE.read_text().strip() \
@@ -332,6 +331,9 @@ class App(tk.Tk):
         self._log("Synced with GitHub on launch.")
         if self._cfg.get("watch_folder") and self._cfg.get("excel_path"):
             self._start()
+
+    self._log("BUILD TEST: Excel-path fix 2026-07-14")
+    self._log(f"Selected Excel: {self.var_excel.get().strip()}")
 
     # ---------------------------------------------------------------- #
     #  ACTIONS
