@@ -11,8 +11,8 @@ import numpy as np
 import pytesseract
 from datetime import datetime
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
-os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
+
+
 
 SENDER_SHEET = [
     ("EMBY",         "EMBY"),
@@ -22,6 +22,23 @@ SENDER_SHEET = [
     ("FENIX",        "FENIX"),
 ]
 
+
+
+# Runtime-safe OCR paths
+import sys
+from pathlib import Path
+
+_OCR_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+_TESSERACT = _OCR_BASE / "Tesseract-OCR" / "tesseract.exe"
+_TESSDATA = _OCR_BASE / "Tesseract-OCR" / "tessdata"
+
+if not _TESSERACT.exists():
+    _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
+if not _TESSDATA.exists():
+    _TESSDATA = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata")
+
+pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
+os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 def _route_by_sender(text):
     t = text.upper()

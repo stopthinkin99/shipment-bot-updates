@@ -9,8 +9,8 @@ from po_tracking import get_po_and_tracking
 from zales_extractor import extract_zales_from_file, is_zales_label
 from malka_brinx import extract_malca_brinks_from_file, is_malca_or_brinks_label
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
-os.environ["TESSDATA_PREFIX"] = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
+
+
 
 PREFIX_SHEET = [
     ("2030", "EMBY"),
@@ -18,6 +18,23 @@ PREFIX_SHEET = [
     ("47",   "FENIX"),
     ("10",   "UNI"),
 ]
+
+
+# Runtime-safe OCR paths
+import sys
+from pathlib import Path
+
+_OCR_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+_TESSERACT = _OCR_BASE / "Tesseract-OCR" / "tesseract.exe"
+_TESSDATA = _OCR_BASE / "Tesseract-OCR" / "tessdata"
+
+if not _TESSERACT.exists():
+    _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
+if not _TESSDATA.exists():
+    _TESSDATA = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata")
+
+pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
+os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 def _route_sheet(invoice_number):
     for prefix, sheet in PREFIX_SHEET:
