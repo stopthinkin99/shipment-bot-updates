@@ -249,11 +249,20 @@ def update_excel(file_path, data):
     if data.get("remark"):
         ws.cell(write_row, COL_REMARK).value = data["remark"]
 
+    for col_cells in ws.columns:
+        max_len = 0
+        col_letter = col_cells[0].column_letter
+        for cell in col_cells:
+            try:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            except Exception:
+                pass
+        ws.column_dimensions[col_letter].width = max(min(max_len + 3, 60), 12)
+
     if not _safe_save(wb, file_path):
-        # Save failed — raise so your processor can queue it for a retry
-        # instead of silently losing the shipment.
         raise PermissionError(
-            f"Could not save '{file_path}'. Close it in Excel and reprocess."
+            f"Could not save '{file_path}'. Close it in Excel and try again."
         )
 
     print(f"[SUCCESS] Shipment added at row {write_row}")
