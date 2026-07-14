@@ -1,45 +1,73 @@
 import os
-import time
 import shutil
+
 from parser import parse_label
 from excel_writer import update_excel
-from datetime import datetime
-
-WATCH_FOLDER  = r"C:\Users\aayan.boradia\Downloads\Labels\Incoming"
-DONE_FOLDER   = r"C:\Users\aayan.boradia\Downloads\Labels\Done"
-EXCEL_PATH = r"C:\Users\aayan.boradia\Downloads\TRACKING_SHIPMENT.xlsx"
 
 
-def process_file(file_path, excel_path=None, done_folder=None):
-    _excel = excel_path  or r"C:\Users\aayan.boradia\Downloads\TRACKING_SHIPMENT.xlsx"
-    _done  = done_folder or r"C:\Users\aayan.boradia\Downloads\ShipmentLabels\Done"
+def process_file(file_path, excel_path=None, done_folder=None, log_fn=print):
+    """
+    Extract a label, write it to the Excel workbook selected in app.py,
+    and optionally move the PDF to a Done folder.
 
-    print(f"[INFO] Processing: {file_path}")
+    Returns a list of extracted records on success.
+    Returns [] after logging the real error on failure.
+    """
+    if not excel_path:
+        log_fn("[ERROR] No Excel tracking file was supplied by app.py.")
+        return []
+
+    if not os.path.isfile(excel_path):
+        log_fn(f"[ERROR] Excel tracking file does not exist: {excel_path}")
+        return []
+
+    log_fn(f"[INFO] Processing: {file_path}")
+    log_fn(f"[INFO] Excel target: {excel_path}")
+
     try:
         records = parse_label(file_path)
 
         if not records:
-            print(f"[WARN] No records extracted from {file_path}")
+            log_fn(f"[WARN] No records extracted from {file_path}")
             return []
+
+        written_records = []
 
         for record in records:
             if not record.get("sheet"):
-                print(f"[SKIP] Could not determine sheet for invoice '{record.get('invoice')}' — manual review needed")
+                log_fn(
+                    "[SKIP] Could not determine sheet for invoice "
+                    f"'{record.get('invoice')}' — manual review needed"
+                )
                 continue
+
             if not record.get("tracking_number"):
-                print(f"[WARN] No tracking number found in {file_path}")
+                log_fn(f"[WARN] No tracking number found in {file_path}")
 
-            update_excel(_excel, record)
-            print(f"[OK] Written to sheet '{record['sheet']}': {record}")
+            update_excel(excel_path, record)
+            written_records.append(record)
+            log_fn(
+                f"[OK] Written to sheet '{record['sheet']}': "
+                f"invoice={record.get('invoice') or '—'}"
+            )
 
-        os.makedirs(_done, exist_ok=True)
-        shutil.move(file_path, os.path.join(_done, os.path.basename(file_path)))
-        print(f"[DONE] Moved to {_done}")
+        if not written_records:
+            log_fn("[ERROR] Nothing was written to Excel.")
+            return []
 
-        return records   # ← this is the only new line
+        # Moving is optional. The GUI currently does not need to provide
+        # a Done folder, so the original PDF can remain in the watched folder.
+        if done_folder:
+            os.makedirs(done_folder, exist_ok=True)
+            destination = os.path.join(done_folder, os.path.basename(file_path))
+            shutil.move(file_path, destination)
+            log_fn(f"[DONE] Moved to {done_folder}")
 
-    except Exception as e:
-        print(f"[ERROR] Failed on {file_path}: {e}")
+        return written_records
+
+    except Exception as exc:
+        log_fn(f"[ERROR] Failed on {file_path}: {type(exc).__name__}: {exc}")
         return []
+
 
 process_label = process_file
