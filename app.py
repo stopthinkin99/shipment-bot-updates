@@ -97,8 +97,9 @@ def _get_autostart() -> bool:
 # ------------------------------------------------------------------ #
 class _LabelHandler:
     """Thin wrapper — import processor lazily so updates take effect."""
-    def __init__(self, log_fn):
+    def __init__(self, log_fn, excel_path: str):
         self.log = log_fn
+        self.excel_path = excel_path
 
     def dispatch(self, path: str):
         if not path.lower().endswith(".pdf"):
@@ -108,12 +109,24 @@ class _LabelHandler:
         try:
             import importlib, processor
             importlib.reload(processor)
-            records = processor.process_label(path)
-            if records:
-                for i, data in enumerate(records):
-                    if len(records) > 1:
-                        self.log(f"  ── Page {i+1} ──")
-                    self._log_data(data)
+            records = processor.process_label(
+                path,
+                excel_path=self.excel_path,
+                log_fn=self.log,
+            )
+
+            if not records:
+                self.log(
+                    f"✗  {os.path.basename(path)}: processing failed "
+                    f"or no records were extracted"
+                )
+                return
+
+            for i, data in enumerate(records):
+                if len(records) > 1:
+                    self.log(f"  ── Page {i+1} ──")
+                self._log_data(data)
+
             self.log(f"✓  {os.path.basename(path)}")
         except Exception as e:
             self.log(f"✗  {os.path.basename(path)}: {e}")
@@ -137,10 +150,11 @@ class _LabelHandler:
 
 
 class WatcherThread(threading.Thread):
-    def __init__(self, folder: str, log_fn):
+    def __init__(self, folder: str, excel_path: str, log_fn):
         super().__init__(daemon=True)
         self.folder = folder
-        self._handler = _LabelHandler(log_fn)
+        self.excel_path = excel_path
+        self._handler = _LabelHandler(log_fn, excel_path)
         self._stop_evt = threading.Event()
         self._observer = None
 
@@ -184,9 +198,10 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Uni Creation — Shipment Bot -FIXED BUILD")
+        self.title("Uni Creation — Shipment Bot")
         self.configure(bg=self.C_BG)
         self.resizable(False, False)
+
         self._cfg     = load_config()
         self._watcher = None
         self._version = VERSION_FILE.read_text().strip() \
@@ -332,9 +347,6 @@ class App(tk.Tk):
         if self._cfg.get("watch_folder") and self._cfg.get("excel_path"):
             self._start()
 
-    self._log("BUILD TEST: Excel-path fix 2026-07-14")
-    self._log(f"Selected Excel: {self.var_excel.get().strip()}")
-
     # ---------------------------------------------------------------- #
     #  ACTIONS
     # ---------------------------------------------------------------- #
@@ -375,7 +387,7 @@ class App(tk.Tk):
         self._save_cfg()
         self._stop()
 
-        self._watcher = WatcherThread(folder, self._log)
+        self._watcher = WatcherThread(folder, excel, self._log)
         self._watcher.start()
 
         # Start 30-day cleanup thread (runs now, then every 24 hours)

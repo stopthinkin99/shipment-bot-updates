@@ -1,5 +1,5 @@
 ﻿#define AppName      "Shipment Bot"
-#define AppVersion   "1.0.0"
+#define AppVersion   "1.0.4"
 #define AppPublisher "Uni Creation Inc."
 #define AppExeName   "ShipmentBot.exe"
 

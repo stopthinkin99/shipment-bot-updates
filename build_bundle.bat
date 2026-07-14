@@ -65,7 +65,7 @@ for %%f in (
 )
 
 REM Write version file
-echo 1.0.0> %BUNDLE%\version.txt
+echo 1.0.4> %BUNDLE%\version.txt
 
 REM Write default empty config
 echo {}> %BUNDLE%\config.json
