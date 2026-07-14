@@ -251,14 +251,17 @@ def update_excel(file_path, data):
 
     for col_cells in ws.columns:
         max_len = 0
-        col_letter = col_cells[0].column_letter
+        col_letter = None
         for cell in col_cells:
             try:
+                if col_letter is None:
+                    col_letter = cell.column_letter
                 if cell.value:
                     max_len = max(max_len, len(str(cell.value)))
-            except Exception:
-                pass
-        ws.column_dimensions[col_letter].width = max(min(max_len + 3, 60), 12)
+            except AttributeError:
+                continue  # skip MergedCell objects
+        if col_letter:
+            ws.column_dimensions[col_letter].width = max(min(max_len + 3, 60), 12)
 
     if not _safe_save(wb, file_path):
         raise PermissionError(
