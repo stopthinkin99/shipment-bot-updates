@@ -26,6 +26,7 @@ os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 SENDER_TO_SHEET = [
     (r"\bEMBY\s+INTERNATIONAL\b", "EMBY"),
+    (r"\bINDOJEWEL\b","FENIX"),
     (r"\bEMBY\b", "EMBY"),
     (r"\bFENIX\b", "FENIX"),
     (r"\bFENIX\s+DIAMONDS\b", "FENIX"),
