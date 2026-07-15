@@ -33,7 +33,7 @@ del %BUNDLE%\python\get-pip.py
 echo [4/6] Installing packages into bundle\python...
 %BUNDLE%\python\python.exe -m pip install ^
     watchdog openpyxl pdf2image Pillow numpy ^
-    pytesseract pywin32 certifi ^
+    pytesseract pywin32 certifi msal requests ^
     --target %BUNDLE%\python\Lib\site-packages ^
     --no-warn-script-location -q
 echo     Packages installed.
@@ -51,10 +51,16 @@ for %%f in (
     processor.py
     parser.py
     extractor.py
+    extractor_core.py
+    po_tracking.py
+    zales_extractor.py
+    malka_brinx.py
     excel_writer.py
     mailer.py
     watcher.py
     cleanup.py
+    daily_digest.py
+    email_sender.py
 ) do (
     if exist %%f (
         copy /Y %%f %BUNDLE%\%%f > nul
