@@ -1,11 +1,8 @@
 """
 mailer.py
 ---------
-Sends manual-review alerts through Microsoft Graph delegated authentication.
-Outlook desktop is not required.
-
-This module must be called by processor.py when required extraction fields
-are missing or the target Excel sheet cannot be determined.
+Sends manual-review alerts through Microsoft Graph and attaches the
+original shipment-label PDF.
 """
 
 import datetime
@@ -13,10 +10,6 @@ import os
 
 from email_sender import send_email
 
-
-# ------------------------------------------------------------------ #
-#  RECIPIENT CONFIGURATION
-# ------------------------------------------------------------------ #
 MANUAL_REVIEW_RECIPIENTS = [
     "shipping@unidesignusa.com",
 ]
@@ -28,12 +21,6 @@ def send_alert(
     reason: str,
     log_fn=print,
 ) -> bool:
-    """
-    Send a manual-review notification.
-
-    Returns True when Microsoft Graph accepts the message and False when
-    sending fails. The extraction workflow should continue either way.
-    """
     try:
         recipients = [
             address.strip()
@@ -42,8 +29,12 @@ def send_alert(
         ]
 
         if not recipients:
-            raise ValueError(
-                "No manual-review recipient addresses are configured."
+            raise ValueError("No manual-review recipient addresses are configured.")
+
+        if not os.path.isfile(pdf_path):
+            raise FileNotFoundError(
+                "The label PDF could not be attached because it was not found: "
+                f"{pdf_path}"
             )
 
         send_email(
@@ -54,12 +45,14 @@ def send_alert(
             ),
             body=_body(pdf_path, data, reason),
             html=False,
+            attachments=[pdf_path],
             log_fn=log_fn,
         )
 
         log_fn(
             "[MAIL] Manual-review alert sent to "
             + ", ".join(recipients)
+            + f" with attachment {os.path.basename(pdf_path)}"
         )
         return True
 
@@ -73,8 +66,7 @@ def send_alert(
         return False
 
 
-def _body(pdf_path, data, reason):
-    """Build the plain-text manual-review email body."""
+def _body(pdf_path: str, data: dict, reason: str) -> str:
     data = data or {}
 
     field_map = [
@@ -88,7 +80,6 @@ def _body(pdf_path, data, reason):
     ]
 
     extracted = []
-
     for label, value in field_map:
         shown = (
             str(value).strip()
@@ -98,21 +89,23 @@ def _body(pdf_path, data, reason):
         extracted.append(f"  {label:<20}: {shown}")
 
     lines = [
-        "The shipment bot could not fully process the label below.",
-        "Please open the tracking workbook and fill in the missing fields.",
+        "The shipment bot could not fully process the attached label.",
+        "Please review the attached PDF and fill in the missing information manually.",
         "",
-        f"Label file : {pdf_path}",
-        f"Reason     : {reason}",
-        f"Time       : {datetime.datetime.now():%Y-%m-%d %H:%M}",
+        f"Attached label: {os.path.basename(pdf_path)}",
+        f"Original path : {pdf_path}",
+        f"Reason        : {reason}",
+        f"Time          : {datetime.datetime.now():%Y-%m-%d %H:%M}",
         "",
         "Fields extracted by the bot:",
         *extracted,
         "",
         "Instructions:",
-        "  1. Open the selected shipment-tracking workbook.",
-        "  2. Go to the correct entity sheet.",
-        "  3. Add or correct the shipment row.",
-        "  4. Fill every field marked *** NOT FOUND *** from the label.",
+        "  1. Open the attached PDF label.",
+        "  2. Open the selected shipment-tracking workbook.",
+        "  3. Go to the correct entity sheet.",
+        "  4. Add or correct the shipment row.",
+        "  5. Fill every field marked *** NOT FOUND ***.",
         "",
         "This is an automated message from the Uni Creation Shipment Bot.",
     ]
