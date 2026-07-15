@@ -39,18 +39,31 @@ from email_sender import send_email
 # Every address listed under a sheet receives that sheet's daily digest.
 SHEET_TO_RECIPIENTS = {
     "UNI": [
-        # "person1@unidesignusa.com",
-        # "person2@unidesignusa.com",
+        "Tenzin@unidesignusa.com",
+        "tenzin.sundue@unidesignusa.com",
+        "tsering@unidesignusa.com",
+        "jimmy.huang@unidesignusa.com",
+        "alex@unidesignusa.com",
+        "hemi@unidesignusa.com",
     ],
     "EMBY": [
-        # "person3@unidesignusa.com",
+        "sujit.das@embyintl.com",
+        "julia.napalkova@embyintl.com",
+        "nirav.mehta@embyintl.com",
+        "daniel.marin@embyintl.com",
+        "hemant.jhaveri@embyintl.com",
     ],
     "FENIX": [
-        # "person4@unidesignusa.com",
-        # "person5@unidesignusa.com",
+        "moe.khaing@fenixdiamonds.com",
+        "lin.aung@fenixdiamonds.com",
+        "gayatri.jariwala@fenixdiamonds.com",
+        "shwe@fenixdiamonds.com",
+        "sales@fenixdiamonds.com",
+        "cesar.villar@fenixdiamonds.com",
+        "hemant.jhaveri@fenixdiamonds.com",
     ],
     "SOL": [
-        # "person6@unidesignusa.com",
+        "shipping@unidesignusa.com",
     ],
 }
 
