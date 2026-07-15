@@ -1,5 +1,7 @@
 import re
 import os
+import sys
+from pathlib import Path
 import fitz
 import cv2
 import numpy as np
@@ -9,25 +11,10 @@ from po_tracking import get_po_and_tracking
 from zales_extractor import extract_zales_from_file, is_zales_label
 from malka_brinx import extract_malca_brinks_from_file, is_malca_or_brinks_label
 
+_BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 
-
-
-PREFIX_SHEET = [
-    ("20", "EMBY"),
-    ("82",   "FENIX"),
-    ("25",   "FENIX"),
-    ("47",   "FENIX"),
-    ("10",   "UNI"),
-]
-
-
-# Runtime-safe OCR paths
-import sys
-from pathlib import Path
-
-_OCR_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-_TESSERACT = _OCR_BASE / "Tesseract-OCR" / "tesseract.exe"
-_TESSDATA = _OCR_BASE / "Tesseract-OCR" / "tessdata"
+_TESSERACT = _BASE_DIR / "Tesseract-OCR" / "tesseract.exe"
+_TESSDATA = _BASE_DIR / "Tesseract-OCR" / "tessdata"
 
 if not _TESSERACT.exists():
     _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
@@ -37,11 +24,34 @@ if not _TESSDATA.exists():
 pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
 os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
-def _route_sheet(invoice_number):
-    for prefix, sheet in PREFIX_SHEET:
-        if str(invoice_number).startswith(prefix):
+SENDER_TO_SHEET = [
+    (r"\bEMBY\s+INTERNATIONAL\b", "EMBY"),
+    (r"\bEMBY\b", "EMBY"),
+    (r"\bFENIX\b", "FENIX"),
+    (r"\bFENIX\s+DIAMONDS\b", "FENIX"),
+    (r"\bUNI[\s\-]*CREATION\b", "UNI"),
+    (r"\bUNI[\s\-]*DESIGN(?:\s+USA)?\b", "UNI"),
+    (r"\bUNIVERSAL\s+(?:CREATION|DESIGN)\b", "UNI"),
+    (r"\bUNI\b", "UNI"),
+]
+
+
+def _top_label_text(text, max_lines=25):
+    lines = [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip()
+    ]
+    return "\n".join(lines[:max_lines])
+
+
+def _route_sheet_by_sender(text):
+    header = _top_label_text(text).upper()
+    for pattern, sheet in SENDER_TO_SHEET:
+        if re.search(pattern, header, re.IGNORECASE):
             return sheet
     return ""
+
 
 def _quick_ocr(file_path):
     """Higher-res first-page OCR for label type detection."""
@@ -56,12 +66,16 @@ def _quick_ocr(file_path):
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return pytesseract.image_to_string(binarized)
+    psm6 = pytesseract.image_to_string(binarized, config="--oem 3 --psm 6")
+    psm11 = pytesseract.image_to_string(binarized, config="--oem 3 --psm 11")
+    return psm6 + "\n" + psm11
 
 def parse_label(file_path):
     preview = _quick_ocr(file_path)
+    sender_sheet = _route_sheet_by_sender(preview)
 
-    print(f"[DEBUG] Preview text snippet: {preview[:300]}")  # remove once stable
+    print(f"[DEBUG] Preview text snippet: {preview[:500]}")
+    print(f"[INFO] Sender-based sheet: {sender_sheet or 'NOT FOUND'}")
 
     # ── Zales / UPS ───────────────────────────────────────────────
     if is_zales_label(preview):
@@ -70,7 +84,7 @@ def parse_label(file_path):
         results = []
         for r in raw_records:
             results.append({
-                "sheet":           "FENIX",
+                "sheet":           sender_sheet or r.get("Sheet", "") or "FENIX",
                 "date":            r.get("Ship Date", ""),
                 "ship_to":         r.get("Recipient Company", ""),
                 "invoice":         r.get("PO Number", "") or r.get("INV Number", "") or r.get("Reference", ""),
@@ -88,7 +102,7 @@ def parse_label(file_path):
         for r in raw_records:
             # malka_brinx.py returns lowercase keys — use them directly
             results.append({
-                "sheet":           r.get("sheet", ""),
+                "sheet":           sender_sheet or r.get("sheet", ""),
                 "date":            r.get("date", ""),
                 "ship_to":         r.get("ship_to", ""),
                 "invoice":         r.get("invoice", ""),
@@ -116,7 +130,9 @@ def parse_label(file_path):
             carrier = _detect_carrier(r.get("Full Extracted Text", ""))
 
             results.append({
-                "sheet":           _route_sheet(invoice),
+                "sheet":           sender_sheet or _route_sheet_by_sender(
+                    r.get("Full Extracted Text", "")
+                ),
                 "date":            r.get("Ship Date", ""),
                 "ship_to":         r.get("Recipient Company", ""),
                 "invoice":         invoice,
