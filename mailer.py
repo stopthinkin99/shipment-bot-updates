@@ -7,8 +7,12 @@ original shipment-label PDF.
 
 import datetime
 import os
+import importlib
+import email_sender
 
-from email_sender import send_email
+importlib.reload(email_sender)
+
+#from email_sender import send_email
 
 MANUAL_REVIEW_RECIPIENTS = [
     "shipping@unidesignusa.com",
@@ -37,7 +41,7 @@ def send_alert(
                 f"{pdf_path}"
             )
 
-        send_email(
+        email_sender.send_email(
             recipients=recipients,
             subject=(
                 "[Shipment Bot] Manual Review — "
