@@ -45,6 +45,7 @@ SHEET_TO_RECIPIENTS = {
         "jimmy.huang@unidesignusa.com",
         "alex@unidesignusa.com",
         "hemi@unidesignusa.com",
+        "gayatri.jariwala@fenixdiamonds.com",
     ],
     "EMBY": [
         "sujit.das@embyintl.com",
