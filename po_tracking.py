@@ -7,7 +7,12 @@ from PIL import Image
 
 
 
-POPPLER_PATH = r"C:\Users\aayan.boradia\Downloads\poppler-26.02.0\Library\bin"
+_pdfinfo = shutil.which("pdfinfo")
+
+if _pdfinfo:
+    POPPLER_PATH = str(Path(_pdfinfo).parent)
+else:
+    POPPLER_PATH = None
 
 
 
