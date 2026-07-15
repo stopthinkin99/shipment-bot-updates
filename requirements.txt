@@ -2,3 +2,5 @@ watchdog
 pdfplumber
 openpyxl
 certifi
+msal
+requests

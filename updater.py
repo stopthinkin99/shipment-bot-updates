@@ -53,6 +53,7 @@ SYNCED_FILES = [
     "mailer.py",
     "cleanup.py",
     "daily_digest.py",
+    "email_sender.py",
 ]
 
 

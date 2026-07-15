@@ -52,6 +52,8 @@ SYNCED_FILES = [
     "excel_writer.py",
     "mailer.py",
     "cleanup.py",
+    "daily_digest.py",
+    "email_sender.py",
 ]
 
 

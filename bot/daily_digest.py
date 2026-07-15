@@ -1,380 +1,471 @@
 """
 daily_digest.py
 ---------------
-Scheduled daily summary e-mail for the shipping-label bot.
+Scheduled daily shipment-summary emails using Microsoft Graph delegated
+authentication. Outlook desktop is not required.
 
-At a user-chosen time each day this module:
-  1. opens the same tracking workbook the bot already writes to,
-  2. walks each entity sheet (UNI, EMBY, FENIX, SOL),
-  3. pulls every row whose date == today,
-  4. builds one e-mail per sheet listing those shipments
-     (company, invoice, tracking, carrier), and
-  5. sends it to the matching Outlook Contact Group.
+This module:
+  1. opens the tracking workbook,
+  2. reads today's rows from UNI, EMBY, FENIX, and SOL,
+  3. builds one HTML email per sheet, and
+  4. sends each message to the email addresses configured below.
 
-Column layout is kept in lock-step with excel_writer.py:
-  A=Date  B=Ship-to  C=Invoice  D=Carrier  E=Tracking  G=Remark
-Reuses the same win32com Outlook path as mailer.py and the same
-openpyxl workbook as excel_writer.py, so it drops into the existing app.
-
-app.py wire-up is in the comment block at the bottom of this file.
+Requires:
+    email_sender.py
+    msal
+    requests
+    openpyxl
 """
 
-import os
+import html
 import json
+import os
 import shutil
 import tempfile
 import threading
 import time
-from datetime import datetime, date
+from datetime import date, datetime
+from pathlib import Path
 
 import openpyxl
 
-try:
-    import win32com.client  # same dependency mailer.py already uses
-except ImportError:  # allows import on a dev machine without Outlook
-    win32com = None
+from email_sender import send_email
 
 
 # ------------------------------------------------------------------ #
-#  CONFIG  --  the only things you may need to touch
+#  RECIPIENT CONFIGURATION
 # ------------------------------------------------------------------ #
-
-# Sheet name (as it appears in the workbook, case-insensitive)  ->
-# Outlook Contact Group display name. Resolved by name at send time.
-SHEET_TO_GROUP = {
-    "UNI":   "Uni-Shipping",
-    "EMBY":  "Emby-Shipping",
-    "FENIX": "Fenix-Shipping",
-    "SOL":   "Sol-Shipping",
+# Replace the example addresses with the real members of each group.
+# Every address listed under a sheet receives that sheet's daily digest.
+SHEET_TO_RECIPIENTS = {
+    "UNI": [
+        # "person1@unidesignusa.com",
+        # "person2@unidesignusa.com",
+    ],
+    "EMBY": [
+        # "person3@unidesignusa.com",
+    ],
+    "FENIX": [
+        # "person4@unidesignusa.com",
+        # "person5@unidesignusa.com",
+    ],
+    "SOL": [
+        # "person6@unidesignusa.com",
+    ],
 }
 
-# Column positions as 0-based tuple indexes (read side uses iter_rows,
-# which is 0-based). Matches the sheet header row:
-#   A DATE | B SHIP TO | C INVOICE/MEMO | D CARRIER | E TRACKING NO
-# (F REMARK/status, G EXTRA, H DELIVERY DATE are not needed here.)
-IDX_DATE     = 0   # A  DATE
-IDX_COMPANY  = 1   # B  SHIP TO
-IDX_INVOICE  = 2   # C  INVOICE/MEMO
-IDX_CARRIER  = 3   # D  CARRIER
-IDX_TRACKING = 4   # E  TRACKING NO
-
-# Set True while testing: opens each e-mail in Outlook for you to eyeball
-# instead of sending it. Flip to False for unattended sending.
-REVIEW_BEFORE_SEND = True
-
-# If a sheet has no shipments today, skip it silently (True) or send a
-# short "no shipments today" note anyway (False).
+# If True, sheets with no shipments today are skipped.
+# If False, the configured recipients receive a "no shipments today" email.
 SKIP_EMPTY_SHEETS = True
 
 
 # ------------------------------------------------------------------ #
-#  TIME PERSISTENCE  (remembers the send time between launches,
-#  in its own file -- no need to touch your app's config)
+#  WORKBOOK COLUMN CONFIGURATION
 # ------------------------------------------------------------------ #
+# A DATE | B SHIP TO | C INVOICE/MEMO | D CARRIER | E TRACKING NO
+IDX_DATE = 0
+IDX_COMPANY = 1
+IDX_INVOICE = 2
+IDX_CARRIER = 3
+IDX_TRACKING = 4
 
-_SETTINGS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "digest_settings.json"
-)
+
+# ------------------------------------------------------------------ #
+#  TIME PERSISTENCE
+# ------------------------------------------------------------------ #
+def _settings_path() -> Path:
+    """
+    Store the digest time in a user-writable location.
+
+    Program Files is often read-only, so LOCALAPPDATA is preferred.
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        folder = Path(base) / "UniCreation" / "ShipmentBot"
+    else:
+        folder = Path.home() / ".un_creation_shipment_bot"
+
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / "digest_settings.json"
+
+
+_SETTINGS_FILE = _settings_path()
 
 
 def load_digest_time(default="17:30"):
-    """Return the saved HH:MM time, or `default` if none saved yet."""
+    """Return the saved HH:MM time, or `default` if none is available."""
     try:
-        with open(_SETTINGS_FILE) as f:
-            return json.load(f).get("digest_time", default)
-    except Exception:  # noqa -- missing/corrupt file -> use default
+        with _SETTINGS_FILE.open("r", encoding="utf-8") as file:
+            value = json.load(file).get("digest_time", default)
+            return str(value).strip() or default
+    except Exception:
         return default
 
 
 def save_digest_time(value):
-    """Persist the HH:MM time so it survives restarts."""
+    """Persist the HH:MM digest time."""
     try:
-        with open(_SETTINGS_FILE, "w") as f:
-            json.dump({"digest_time": value}, f)
-    except Exception:  # noqa -- best effort, never crash the GUI
+        with _SETTINGS_FILE.open("w", encoding="utf-8") as file:
+            json.dump({"digest_time": str(value).strip()}, file, indent=2)
+    except Exception:
+        # A settings-write failure must never crash the GUI.
         pass
 
 
 # ------------------------------------------------------------------ #
 #  WORKBOOK READING
 # ------------------------------------------------------------------ #
-
 def _open_workbook(excel_path, retries=4, wait=1.5):
     """
-    Load the workbook read-only. If Excel has the file locked, copy it to
-    a temp file and read the copy instead (same defensive idea as the
-    writer's retry logic). Returns (workbook, temp_path_or_None).
+    Open the workbook read-only.
+
+    If Excel temporarily locks it, retry. If it remains locked, copy it
+    to the temporary directory and read the copy.
     """
     for _ in range(retries):
         try:
-            wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
-            return wb, None
+            workbook = openpyxl.load_workbook(
+                excel_path,
+                read_only=True,
+                data_only=True,
+            )
+            return workbook, None
         except (PermissionError, OSError):
             time.sleep(wait)
 
-    # Still locked -> read a copy.
-    tmp = os.path.join(tempfile.gettempdir(),
-                       f"digest_{os.path.basename(excel_path)}")
-    shutil.copy2(excel_path, tmp)
-    wb = openpyxl.load_workbook(tmp, read_only=True, data_only=True)
-    return wb, tmp
+    temporary_path = os.path.join(
+        tempfile.gettempdir(),
+        f"digest_{os.path.basename(excel_path)}",
+    )
+    shutil.copy2(excel_path, temporary_path)
+
+    workbook = openpyxl.load_workbook(
+        temporary_path,
+        read_only=True,
+        data_only=True,
+    )
+    return workbook, temporary_path
 
 
 def _as_date(value):
-    """Normalize a cell value to a date, or None."""
+    """Convert an Excel or text value to datetime.date."""
     if value is None:
         return None
+
     if isinstance(value, datetime):
         return value.date()
+
     if isinstance(value, date):
         return value
+
     text = str(value).strip()
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%d%b%y", "%d%b%Y"):
+    formats = (
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%Y-%m-%d",
+        "%d%b%y",
+        "%d%b%Y",
+    )
+
+    for date_format in formats:
         try:
-            return datetime.strptime(text, fmt).date()
+            return datetime.strptime(text, date_format).date()
         except ValueError:
             continue
+
     return None
 
 
-def _get(row, idx):
-    if idx < len(row) and row[idx] is not None:
-        return str(row[idx]).strip()
+def _get(row, index):
+    if index < len(row) and row[index] is not None:
+        return str(row[index]).strip()
     return ""
 
 
-def read_todays_shipments(ws, today):
-    """
-    Return a list of shipment dicts on `ws` dated `today`.
-
-    Header-position-agnostic: the merged title rows, the "DATE" header
-    row, blue date-divider rows and blank spacers all fail the "column A
-    is a real date == today" test, so they're skipped without any
-    hard-coded start row. A row also needs a company or tracking value.
-    """
+def read_todays_shipments(worksheet, today):
+    """Return all real shipment rows from `worksheet` dated `today`."""
     shipments = []
-    for row in ws.iter_rows(values_only=True):
-        if row is None or not any(c is not None for c in row):
+
+    for row in worksheet.iter_rows(values_only=True):
+        if row is None or not any(cell is not None for cell in row):
             continue
-        if _as_date(row[IDX_DATE] if len(row) > IDX_DATE else None) != today:
+
+        row_date = row[IDX_DATE] if len(row) > IDX_DATE else None
+        if _as_date(row_date) != today:
             continue
+
         company = _get(row, IDX_COMPANY)
         tracking = _get(row, IDX_TRACKING)
+
+        # Ignore divider or spacer rows.
         if not company and not tracking:
-            continue  # divider / spacer
+            continue
+
         shipments.append({
-            "company":  company,
-            "invoice":  _get(row, IDX_INVOICE),
+            "company": company,
+            "invoice": _get(row, IDX_INVOICE),
             "tracking": tracking,
-            "carrier":  _get(row, IDX_CARRIER),
+            "carrier": _get(row, IDX_CARRIER),
         })
+
     return shipments
 
 
 def collect_by_sheet(excel_path, today=None):
     """
-    Read every configured sheet and return {SHEET_NAME: [shipment, ...]},
-    containing only sheets with shipments today (unless SKIP_EMPTY_SHEETS
-    is False).
+    Return:
+        {
+            "UNI": [...],
+            "EMBY": [...],
+            ...
+        }
+
+    Only configured sheets are considered.
     """
     today = today or date.today()
-    wb, tmp = _open_workbook(excel_path)
+    workbook, temporary_path = _open_workbook(excel_path)
     result = {}
+
     try:
-        titles = {t.upper(): t for t in wb.sheetnames}
-        for sheet_key in SHEET_TO_GROUP:
-            actual = titles.get(sheet_key.upper())
-            if not actual:
+        actual_titles = {
+            title.upper(): title
+            for title in workbook.sheetnames
+        }
+
+        for sheet_key in SHEET_TO_RECIPIENTS:
+            actual_title = actual_titles.get(sheet_key.upper())
+            if not actual_title:
                 continue
-            shipments = read_todays_shipments(wb[actual], today)
+
+            shipments = read_todays_shipments(
+                workbook[actual_title],
+                today,
+            )
+
             if shipments or not SKIP_EMPTY_SHEETS:
                 result[sheet_key] = shipments
     finally:
-        wb.close()
-        if tmp and os.path.exists(tmp):
+        workbook.close()
+
+        if temporary_path and os.path.exists(temporary_path):
             try:
-                os.remove(tmp)
+                os.remove(temporary_path)
             except OSError:
                 pass
+
     return result
 
 
 # ------------------------------------------------------------------ #
-#  E-MAIL BUILDING + SENDING
+#  EMAIL BUILDING AND SENDING
 # ------------------------------------------------------------------ #
+def _safe(value):
+    return html.escape(str(value or ""))
+
 
 def _build_html(sheet_key, shipments, today):
     day = today.strftime("%m/%d/%Y")
-    if not shipments:
-        return f"<p>No {sheet_key} shipments went out on {day}.</p>"
 
-    head = (
-        "<tr style='background:#5B9BD5;color:#fff'>"
-        "<th align='left'>Company</th>"
-        "<th align='left'>Invoice</th>"
-        "<th align='left'>Tracking #</th>"
-        "<th align='left'>Carrier</th>"
+    if not shipments:
+        return (
+            "<p style='font-family:Segoe UI,Arial,sans-serif'>"
+            f"No {_safe(sheet_key)} shipments went out on {_safe(day)}."
+            "</p>"
+        )
+
+    header = (
+        "<tr style='background:#5B9BD5;color:#ffffff'>"
+        "<th align='left' style='padding:6px'>Company</th>"
+        "<th align='left' style='padding:6px'>Invoice</th>"
+        "<th align='left' style='padding:6px'>Tracking #</th>"
+        "<th align='left' style='padding:6px'>Carrier</th>"
         "</tr>"
     )
+
     body_rows = "".join(
         "<tr>"
-        f"<td>{s['company']}</td>"
-        f"<td>{s['invoice']}</td>"
-        f"<td>{s['tracking']}</td>"
-        f"<td>{s['carrier']}</td>"
+        f"<td style='padding:6px'>{_safe(shipment['company'])}</td>"
+        f"<td style='padding:6px'>{_safe(shipment['invoice'])}</td>"
+        f"<td style='padding:6px'>{_safe(shipment['tracking'])}</td>"
+        f"<td style='padding:6px'>{_safe(shipment['carrier'])}</td>"
         "</tr>"
-        for s in shipments
+        for shipment in shipments
     )
+
     return (
-        f"<p>{len(shipments)} {sheet_key} shipment(s) went out on {day}:</p>"
-        "<table border='1' cellpadding='6' cellspacing='0' "
-        "style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;"
-        "font-size:13px'>"
-        f"{head}{body_rows}"
+        "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:13px'>"
+        f"<p>{len(shipments)} {_safe(sheet_key)} shipment(s) "
+        f"went out on {_safe(day)}:</p>"
+        "<table border='1' cellpadding='0' cellspacing='0' "
+        "style='border-collapse:collapse'>"
+        f"{header}{body_rows}"
         "</table>"
+        "<p>This is an automated message from the "
+        "Uni Creation Shipment Bot.</p>"
+        "</div>"
     )
 
 
-def _get_outlook():
-    if win32com is None:
-        raise RuntimeError("win32com not available -- Outlook cannot be reached.")
-    return win32com.client.Dispatch("Outlook.Application")
+def send_group_digest(
+    sheet_key,
+    shipments,
+    today,
+    outlook=None,  # retained for compatibility with older callers
+    log=print,
+):
+    """
+    Send one digest through Microsoft Graph.
 
+    `outlook` is intentionally ignored. It remains in the signature so
+    older code that passes it does not break.
+    """
+    del outlook
 
-def send_group_digest(sheet_key, shipments, today, outlook=None):
-    """Send (or Display) one digest e-mail for a single sheet/group."""
-    group = SHEET_TO_GROUP.get(sheet_key)
-    if not group:
-        return False, f"No Outlook group mapped for {sheet_key}"
+    recipients = [
+        address.strip()
+        for address in SHEET_TO_RECIPIENTS.get(sheet_key, [])
+        if address and address.strip()
+    ]
 
-    outlook = outlook or _get_outlook()
-    mail = outlook.CreateItem(0)  # 0 = olMailItem
-    mail.Subject = f"Shipments Sent Today - {sheet_key} - {today.strftime('%m/%d/%Y')}"
-    mail.HTMLBody = _build_html(sheet_key, shipments, today)
+    if not recipients:
+        return False, f"{sheet_key}: no recipient email addresses configured"
 
-    recip = mail.Recipients.Add(group)      # Contact Group display name
-    recip.Resolve()
-    if not mail.Recipients.ResolveAll():
-        return False, f"{sheet_key}: could not resolve group '{group}' in Outlook"
+    subject = (
+        f"Shipments Sent Today - {sheet_key} - "
+        f"{today.strftime('%m/%d/%Y')}"
+    )
 
-    if REVIEW_BEFORE_SEND:
-        mail.Display()
-        return True, f"{sheet_key}: opened for review ({len(shipments)} rows)"
-    mail.Send()
-    return True, f"{sheet_key}: sent to {group} ({len(shipments)} rows)"
+    send_email(
+        recipients=recipients,
+        subject=subject,
+        body=_build_html(sheet_key, shipments, today),
+        html=True,
+        log_fn=log,
+    )
+
+    return (
+        True,
+        f"{sheet_key}: sent to {len(recipients)} recipient(s) "
+        f"({len(shipments)} shipment row(s))",
+    )
 
 
 def run_daily_digest(excel_path, today=None, log=print):
     """
-    Full run: read all sheets, send one e-mail per sheet with shipments.
-    `log` is any callable(str); pass your GUI logger here. Returns a list
-    of status strings.
+    Read today's shipments and send one message per configured sheet.
+
+    Returns a list of status messages.
     """
     today = today or date.today()
+
+    if not excel_path:
+        message = "Digest failed: Excel path is empty."
+        log(message)
+        return [message]
+
+    if not os.path.isfile(excel_path):
+        message = f"Digest failed: Excel file not found: {excel_path}"
+        log(message)
+        return [message]
+
     try:
         by_sheet = collect_by_sheet(excel_path, today)
-    except Exception as e:  # noqa
-        msg = f"Digest read failed: {e}"
-        log(msg)
-        return [msg]
+    except Exception as exc:
+        message = (
+            "Digest read failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        log(message)
+        return [message]
 
     if not by_sheet:
-        msg = f"No shipments found for {today.strftime('%m/%d/%Y')} on any sheet."
-        log(msg)
-        return [msg]
+        message = (
+            "No shipments found for "
+            f"{today.strftime('%m/%d/%Y')} on any configured sheet."
+        )
+        log(message)
+        return [message]
 
-    outlook = _get_outlook()
     results = []
+
     for sheet_key, shipments in by_sheet.items():
         try:
-            _, info = send_group_digest(sheet_key, shipments, today, outlook)
-        except Exception as e:  # noqa
-            info = f"{sheet_key}: FAILED -- {e}"
-        log(info)
-        results.append(info)
+            _, information = send_group_digest(
+                sheet_key,
+                shipments,
+                today,
+                log=log,
+            )
+        except Exception as exc:
+            information = (
+                f"{sheet_key}: FAILED — "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        log(information)
+        results.append(information)
+
     return results
 
 
 # ------------------------------------------------------------------ #
 #  SCHEDULER
 # ------------------------------------------------------------------ #
-
 class DigestScheduler(threading.Thread):
     """
-    Background thread that fires run_daily_digest once per day at HH:MM.
-
-    - Editable at runtime: change the value returned by get_target and it
-      takes effect on the next poll.
-    - Fires at most once per calendar day.
-    - Stop cleanly with .stop().
+    Background thread that runs the digest once per day at HH:MM.
     """
 
-    def __init__(self, get_excel_path, get_target, log=print, poll_seconds=20):
+    def __init__(
+        self,
+        get_excel_path,
+        get_target,
+        log=print,
+        poll_seconds=20,
+    ):
         super().__init__(daemon=True)
         self.get_excel_path = get_excel_path
-        self.get_target = get_target      # returns "HH:MM"
+        self.get_target = get_target
         self.log = log
         self.poll_seconds = poll_seconds
-        self._stop = threading.Event()
-        self._last_fired = None           # date it last ran
+        self._stop_event = threading.Event()
+        self._last_fired = None
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self):
         self.log("Daily digest scheduler started.")
-        while not self._stop.is_set():
+
+        while not self._stop_event.is_set():
             target = (self.get_target() or "").strip()
             now = datetime.now()
-            if target and now.strftime("%H:%M") == target and self._last_fired != now.date():
+
+            should_run = (
+                target
+                and now.strftime("%H:%M") == target
+                and self._last_fired != now.date()
+            )
+
+            if should_run:
                 self._last_fired = now.date()
-                path = self.get_excel_path()
-                if not path or not os.path.exists(path):
-                    self.log("Digest skipped: Excel path not set / missing.")
+                excel_path = self.get_excel_path()
+
+                if not excel_path or not os.path.exists(excel_path):
+                    self.log(
+                        "Digest skipped: Excel path is not set or missing."
+                    )
                 else:
-                    self.log(f"Running daily digest for {now.strftime('%m/%d/%Y')} ...")
-                    run_daily_digest(path, today=now.date(), log=self.log)
-            self._stop.wait(self.poll_seconds)
+                    self.log(
+                        "Running daily digest for "
+                        f"{now.strftime('%m/%d/%Y')} ..."
+                    )
+                    run_daily_digest(
+                        excel_path,
+                        today=now.date(),
+                        log=self.log,
+                    )
+
+            self._stop_event.wait(self.poll_seconds)
+
         self.log("Daily digest scheduler stopped.")
-
-
-# ------------------------------------------------------------------ #
-#  APP.PY WIRE-UP  (paste the relevant bits into app.py)
-# ------------------------------------------------------------------ #
-#
-#  import threading
-#  import tkinter as tk
-#  from daily_digest import (DigestScheduler, run_daily_digest,
-#                            load_digest_time, save_digest_time)
-#
-#  # --- in your GUI build ---
-#  # time entry that remembers itself between launches:
-#  time_var = tk.StringVar(value=load_digest_time())          # loads saved time
-#  time_var.trace_add("write", lambda *a: save_digest_time(time_var.get()))
-#  tk.Label(frame, text="Daily summary time (HH:MM):").pack(side="left")
-#  tk.Entry(frame, textvariable=time_var, width=6).pack(side="left")
-#
-#  # thread-safe logging back into your existing activity log:
-#  def gui_log(msg):
-#      root.after(0, lambda: activity_log_append(msg))        # your log fn
-#
-#  # start the scheduler once, when the app starts (or on Start):
-#  self.digest_sched = DigestScheduler(
-#      get_excel_path=lambda: excel_path_var.get(),           # your existing var
-#      get_target=lambda: time_var.get(),
-#      log=gui_log,
-#  )
-#  self.digest_sched.start()
-#
-#  # optional "Send summary now" button for testing:
-#  tk.Button(frame, text="Send summary now",
-#            command=lambda: threading.Thread(
-#                target=lambda: run_daily_digest(excel_path_var.get(), log=gui_log),
-#                daemon=True).start()
-#           ).pack(side="left")
-#
-#  # OPTIONAL clean shutdown (the thread is a daemon, so this isn't required):
-#  #   def on_close():
-#  #       self.digest_sched.stop()
-#  #       root.destroy()
-#  #   root.protocol("WM_DELETE_WINDOW", on_close)
