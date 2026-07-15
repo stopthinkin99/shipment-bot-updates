@@ -13,7 +13,7 @@ from malka_brinx import extract_malca_brinks_from_file, is_malca_or_brinks_label
 
 
 PREFIX_SHEET = [
-    ("2030", "EMBY"),
+    ("20", "EMBY"),
     ("82",   "FENIX"),
     ("47",   "FENIX"),
     ("10",   "UNI"),
