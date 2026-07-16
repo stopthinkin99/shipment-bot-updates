@@ -10,9 +10,6 @@ from datetime import datetime
 
 
 
-
-
-
 # Runtime-safe OCR paths
 import sys
 from pathlib import Path
@@ -114,6 +111,102 @@ def process_extracted_text(raw_text):
     return '\n'.join(valid_lines)
 
 
+
+_COMPANY_SUFFIX_PATTERN = re.compile(
+    r"\b(?:AG|INC|INCORPORATED|LLC|LTD|LIMITED|CORP|CORPORATION|"
+    r"COMPANY|CO|LP|PLC|GMBH|S\.A\.|SA|BV|NV)\b",
+    re.IGNORECASE,
+)
+
+_ADDRESS_WORD_PATTERN = re.compile(
+    r"\b(?:ST|STREET|AVE|AVENUE|ROAD|RD|BLVD|BOULEVARD|"
+    r"TURNPIKE|DRIVE|DR|HIGHWAY|HWY|LANE|LN|COURT|CT)\b",
+    re.IGNORECASE,
+)
+
+_STOP_BLOCK_PATTERN = re.compile(
+    r"\b(?:UPS|FEDEX|TRACKING|BILLING|SIGNATURE|REF|REFERENCE|"
+    r"WEIGHT|SERVICE|PACKAGE)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_ship_to_company(text):
+    """
+    Extract the actual company from the SHIP TO block.
+
+    Example:
+        SHIP TO:
+        BRAND THIES
+        (401) 463-2509
+        SWAROVSKI AG.
+        7830 NATIONAL TURNPIKE
+
+    Returns:
+        SWAROVSKI AG
+    """
+    lines = [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip()
+    ]
+
+    ship_to_index = None
+
+    for index, line in enumerate(lines):
+        if re.search(r"\bSHIP\s*TO\s*:?", line, re.IGNORECASE):
+            ship_to_index = index
+            break
+
+    if ship_to_index is None:
+        return ""
+
+    candidates = []
+
+    for line in lines[ship_to_index + 1:ship_to_index + 12]:
+        cleaned = line.strip()
+        upper = cleaned.upper().strip(" .")
+
+        if _STOP_BLOCK_PATTERN.search(upper):
+            break
+
+        if re.fullmatch(r"[\d\s()+\-]+", cleaned):
+            continue
+
+        if upper.startswith(("C/O ", "C/O:", "ATTN ", "ATTN:")):
+            continue
+
+        if _ADDRESS_WORD_PATTERN.search(upper):
+            continue
+
+        if re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", upper):
+            continue
+
+        letters = len(re.findall(r"[A-Z]", upper))
+        digits = len(re.findall(r"\d", upper))
+
+        if letters < 3 or digits > letters:
+            continue
+
+        candidates.append(cleaned.rstrip(" ."))
+
+    for candidate in candidates:
+        if _COMPANY_SUFFIX_PATTERN.search(candidate):
+            return candidate
+
+    company_keywords = re.compile(
+        r"\b(?:DIAMOND|JEWEL|JEWELRY|DESIGN|CREATION|"
+        r"INTERNATIONAL|INDUSTRIES|GROUP|SUPPLY)\b",
+        re.IGNORECASE,
+    )
+
+    for candidate in candidates:
+        if company_keywords.search(candidate):
+            return candidate
+
+    return candidates[0] if candidates else ""
+
+
 def parse_core_fields(text, filename, page):
     data = {
         "Source File": filename,
@@ -142,16 +235,43 @@ def parse_core_fields(text, filename, page):
                     data["INV Number"] = nums[0]
                     break
 
-    # Reference
-    m = re.search(r'\bR[\s.]*E[\s.]*F[\s:#]*([0-9]{4,})', text, re.IGNORECASE)
+    # Indexed UPS reference, e.g. REF 1:47122997
+    m = re.search(
+        r'\bR[\s.]*E[\s.]*F(?:ERENCE)?\s*#?\s*1\s*[:\-]\s*'
+        r'([A-Z0-9\-]{4,})',
+        text,
+        re.IGNORECASE,
+    )
     if m:
         data["Reference"] = m.group(1).strip()
+
+    # Generic reference fallback
     if not data["Reference"]:
-        for line in text.split('\n'):
-            if re.search(r'\bR[\s.]*E[\s.]*F\b', line, re.IGNORECASE):
-                nums = re.findall(r'\d{4,}', line)
-                if nums:
-                    data["Reference"] = nums[0]
+        m = re.search(
+            r'\bR[\s.]*E[\s.]*F(?:ERENCE)?[\s:#\-]+'
+            r'([A-Z0-9\-]{4,})',
+            text,
+            re.IGNORECASE,
+        )
+        if m and m.group(1).strip() != "1":
+            data["Reference"] = m.group(1).strip()
+
+    if not data["Reference"]:
+        for line in text.splitlines():
+            if re.search(r'\bREF(?:ERENCE)?\b', line, re.IGNORECASE):
+                indexed = re.search(
+                    r'\bREF(?:ERENCE)?\s*1\s*[:\-]\s*'
+                    r'([A-Z0-9\-]{4,})',
+                    line,
+                    re.IGNORECASE,
+                )
+                if indexed:
+                    data["Reference"] = indexed.group(1).strip()
+                    break
+
+                values = re.findall(r'[A-Z0-9\-]{4,}', line, re.IGNORECASE)
+                if values:
+                    data["Reference"] = values[-1]
                     break
 
     # CAD
@@ -170,38 +290,32 @@ def parse_core_fields(text, filename, page):
         data["Ship Date"] = m.group(1).strip()
 
     # Recipient Company
-    lines = text.split('\n')
-    recipient = ""
+    recipient = _extract_ship_to_company(text)
 
-    # Strategy 1: "TO <name>" — skip that line, take next non-empty
-    for i, line in enumerate(lines):
-        if re.match(r'^\s*TO\s+\S+', line, re.IGNORECASE):
-            for j in range(i + 1, len(lines)):
-                candidate = lines[j].strip()
-                if candidate:
-                    recipient = candidate
-                    break
-            break
-
-    # Strategy 2: "SHIP TO:" block
+    # Fallback for older "TO ..." layouts.
     if not recipient:
+        lines = text.splitlines()
+
         for i, line in enumerate(lines):
-            if re.match(r'^\s*SHIP\s*TO\s*:', line, re.IGNORECASE):
-                for j in range(i + 1, len(lines)):
-                    candidate = lines[j].strip()
+            if re.match(r'^\s*TO\s+\S+', line, re.IGNORECASE):
+                for candidate in lines[i + 1:]:
+                    candidate = candidate.strip()
                     if candidate:
                         recipient = candidate
                         break
                 break
 
-    # Strategy 3: all-caps company name in first 15 lines, no digits, 2+ words
+    # Final fallback: formal all-caps company name.
     if not recipient:
-        for line in lines[:15]:
-            line = line.strip()
-            if (re.match(r'^[A-Z][A-Z\s&.,]{4,}$', line)
-                    and not re.search(r'\d', line)
-                    and len(line.split()) >= 2):
-                recipient = line
+        for line in text.splitlines()[:20]:
+            candidate = line.strip()
+            if (
+                re.match(r'^[A-Z][A-Z\s&.,\-]{4,}$', candidate)
+                and not re.search(r'\d', candidate)
+                and len(candidate.split()) >= 2
+                and _COMPANY_SUFFIX_PATTERN.search(candidate)
+            ):
+                recipient = candidate.rstrip(" .")
                 break
 
     data["Recipient Company"] = recipient
@@ -210,8 +324,19 @@ def parse_core_fields(text, filename, page):
 
 def process_single_image(img_array, filename, page):
     processed_img = deep_scan_preprocess(img_array)
-    raw_text = extract_confident_lines(processed_img, r'--oem 3 --psm 11')
-    clean_text = process_extracted_text(raw_text)
+
+    psm11_text = extract_confident_lines(
+        processed_img,
+        r'--oem 3 --psm 11',
+    )
+    psm6_text = pytesseract.image_to_string(
+        processed_img,
+        config='--oem 3 --psm 6',
+    )
+
+    combined_text = psm6_text + "\n" + psm11_text
+    clean_text = process_extracted_text(combined_text)
+
     return parse_core_fields(clean_text, filename, page)
 
 
