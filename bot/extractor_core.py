@@ -223,6 +223,26 @@ def parse_core_fields(text, filename, page):
         "Application Run Date and time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
+    # PO Number, including compact Brinks lists.
+    po_match = re.search(
+        r"\bP[\s.]*[O0]\s*#?\s*[:\-]?\s*"
+        r"([0-9]{5,}(?:\s*[,;/]\s*[0-9]{1,8})+|[0-9]{5,})",
+        text,
+        re.IGNORECASE,
+    )
+    if po_match:
+        parts = re.findall(r"\d+", po_match.group(1))
+        if parts:
+            first = parts[0]
+            expanded = [first]
+            for suffix in parts[1:]:
+                expanded.append(
+                    first[:-len(suffix)] + suffix
+                    if len(suffix) < len(first)
+                    else suffix
+                )
+            data["PO Number"] = ", ".join(expanded)
+
     # INV Number
     m = re.search(r'\bI[\s.]*N[\s.]*V[\s:#]*([0-9]{4,})', text, re.IGNORECASE)
     if m:
@@ -322,23 +342,36 @@ def parse_core_fields(text, filename, page):
     return data
 
 
+def _rotate_image(img, angle):
+    if angle == 90:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    if angle == 270:
+        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return img
+
+
 def process_single_image(img_array, filename, page):
-    processed_img = deep_scan_preprocess(img_array)
+    # Some UPS print pages contain a landscape label rotated inside a
+    # portrait instruction page. OCR all useful orientations and merge.
+    all_text = []
+    for angle in (0, 90, 270):
+        rotated = _rotate_image(img_array, angle)
+        processed = deep_scan_preprocess(rotated)
+        all_text.append(
+            pytesseract.image_to_string(
+                processed,
+                config="--oem 3 --psm 6",
+            )
+        )
+        all_text.append(
+            extract_confident_lines(
+                processed,
+                "--oem 3 --psm 11",
+            )
+        )
 
-    psm11_text = extract_confident_lines(
-        processed_img,
-        r'--oem 3 --psm 11',
-    )
-    psm6_text = pytesseract.image_to_string(
-        processed_img,
-        config='--oem 3 --psm 6',
-    )
-
-    combined_text = psm6_text + "\n" + psm11_text
-    clean_text = process_extracted_text(combined_text)
-
+    clean_text = process_extracted_text("\n".join(all_text))
     return parse_core_fields(clean_text, filename, page)
-
 
 def extract_data_from_file(file_path):
     if not os.path.exists(file_path):

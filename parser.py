@@ -26,10 +26,9 @@ os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 SENDER_TO_SHEET = [
     (r"\bEMBY\s+INTERNATIONAL\b", "EMBY"),
-    (r"\bINDOJEWEL\b","FENIX"),
     (r"\bEMBY\b", "EMBY"),
-    (r"\bFENIX\b", "FENIX"),
-    (r"\bFENIX\s+DIAMONDS\b", "FENIX"),
+    (r"\bFENIX(?:\s+DIAMOND(?:S)?)?\b", "FENIX"),
+    (r"\bFEN[1IL]X\b", "FENIX"),
     (r"\bUNI[\s\-]*CREATION\b", "UNI"),
     (r"\bUNI[\s\-]*DESIGN(?:\s+USA)?\b", "UNI"),
     (r"\bUNIVERSAL\s+(?:CREATION|DESIGN)\b", "UNI"),
@@ -55,21 +54,47 @@ def _route_sheet_by_sender(text):
 
 
 def _quick_ocr(file_path):
-    """Higher-res first-page OCR for label type detection."""
+    """First-page OCR at 0, 90, and 270 degrees for type and sender detection."""
     doc = fitz.open(file_path)
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=250)   # bumped from 150 so MALCA-AMIT is readable
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-    doc.close()
+    try:
+        page = doc.load_page(0)
+        pix = page.get_pixmap(dpi=250)
+        img = np.frombuffer(
+            pix.samples,
+            dtype=np.uint8,
+        ).reshape(pix.h, pix.w, pix.n)
+    finally:
+        doc.close()
+
     if pix.n == 4:
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
     elif pix.n == 3:
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, binarized = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    psm6 = pytesseract.image_to_string(binarized, config="--oem 3 --psm 6")
-    psm11 = pytesseract.image_to_string(binarized, config="--oem 3 --psm 11")
-    return psm6 + "\n" + psm11
+
+    texts = []
+    for angle in (0, 90, 270):
+        if angle == 90:
+            rotated = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        elif angle == 270:
+            rotated = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            rotated = img
+
+        gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(
+            gray,
+            0,
+            255,
+            cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+        )
+        texts.append(
+            pytesseract.image_to_string(binary, config="--oem 3 --psm 6")
+        )
+        texts.append(
+            pytesseract.image_to_string(binary, config="--oem 3 --psm 11")
+        )
+
+    return "\n".join(texts)
 
 def parse_label(file_path):
     preview = _quick_ocr(file_path)

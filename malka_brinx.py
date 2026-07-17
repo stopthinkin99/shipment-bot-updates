@@ -11,8 +11,18 @@ import numpy as np
 import pytesseract
 from datetime import datetime
 
+import sys
+from pathlib import Path
 
-
+_BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+_TESSERACT = _BASE_DIR / "Tesseract-OCR" / "tesseract.exe"
+_TESSDATA = _BASE_DIR / "Tesseract-OCR" / "tessdata"
+if not _TESSERACT.exists():
+    _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
+if not _TESSDATA.exists():
+    _TESSDATA = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata")
+pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
+os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 SENDER_SHEET = [
     ("EMBY",         "EMBY"),
@@ -22,23 +32,6 @@ SENDER_SHEET = [
     ("FENIX",        "FENIX"),
 ]
 
-
-
-# Runtime-safe OCR paths
-import sys
-from pathlib import Path
-
-_OCR_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-_TESSERACT = _OCR_BASE / "Tesseract-OCR" / "tesseract.exe"
-_TESSDATA = _OCR_BASE / "Tesseract-OCR" / "tessdata"
-
-if not _TESSERACT.exists():
-    _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
-if not _TESSDATA.exists():
-    _TESSDATA = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata")
-
-pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
-os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 
 def _route_by_sender(text):
     t = text.upper()
@@ -221,10 +214,28 @@ def _extract_brinks(text, filename, page):
     # Date
     data["date"] = _parse_date(text)
 
-    # PO: "PO # 07102026-1,1-2"
-    m = re.search(r'PO\s*#\s*([A-Z0-9][A-Z0-9\-,\.]+)', text, re.IGNORECASE)
+    # PO supports one full value followed by abbreviated suffixes:
+    # PO # 86100087, 89, 90, 107
+    m = re.search(
+        r"\bP[\s.]*[O0]\s*#?\s*[:\-]?\s*"
+        r"([0-9]{5,}(?:\s*[,;/]\s*[0-9]{1,8})+|[A-Z0-9][A-Z0-9,./\-]+)",
+        text,
+        re.IGNORECASE,
+    )
     if m:
-        data["invoice"] = m.group(1).strip()
+        raw_po = m.group(1).strip().rstrip(".,")
+        numeric_parts = re.findall(r"\d+", raw_po)
+        if numeric_parts and numeric_parts[0].isdigit():
+            first = numeric_parts[0]
+            expanded = [first]
+            for suffix in numeric_parts[1:]:
+                if len(suffix) < len(first):
+                    expanded.append(first[:-len(suffix)] + suffix)
+                else:
+                    expanded.append(suffix)
+            data["invoice"] = ", ".join(expanded)
+        else:
+            data["invoice"] = raw_po
 
     # Tracking: "Tracking No. 11017170336"
     m = re.search(r'Tracking\s*No\.?\s*[:\-]?\s*([0-9]{8,})', text, re.IGNORECASE)

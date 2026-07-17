@@ -55,59 +55,83 @@ os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 def _normalize_ups_candidate(value):
     candidate = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
-    if candidate.startswith(("IZ", "I2", "12")):
+    # Common OCR substitutions for UPS prefix.
+    if candidate.startswith(("IZ", "I2", "12", "LZ")):
         candidate = "1Z" + candidate[2:]
 
+    # UPS numbers are always 18 characters: 1Z + 16 alphanumerics.
     match = re.search(r"1Z[A-Z0-9]{16}", candidate)
     return match.group(0) if match else ""
 
 
 def extract_tracking_number(text):
-    """
-    Extract UPS or FedEx tracking numbers.
+    """Extract UPS, FedEx, USPS, or other long carrier tracking numbers."""
+    source = str(text or "")
 
-    Example:
-        TRACKING #: 1Z 303 26A 24 4414 7468
-        -> 1Z30326A2444147468
-    """
-    match = re.search(
-        r"TRACKING\s*#?\s*:?\s*"
-        r"([1I][Z2][A-Z0-9\s\-]{12,40})",
-        text,
+    # UPS: prioritize text printed after TRACKING / TRACKING #.
+    for match in re.finditer(
+        r"TRACKING(?:\s+NO\.?|\s+NUMBER)?\s*#?\s*[:\-]?\s*"
+        r"([1IL][Z2][A-Z0-9\s\-]{12,45})",
+        source,
         re.IGNORECASE,
-    )
-    if match:
+    ):
         tracking = _normalize_ups_candidate(match.group(1))
         if tracking:
             return tracking
 
-    compact = re.sub(r"[^A-Z0-9]", "", str(text or "").upper())
-    compact = compact.replace("IZ", "1Z").replace("I2", "1Z")
+    # UPS fallback anywhere in OCR text, allowing spaces between every group.
+    for match in re.finditer(
+        r"\b([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})\b",
+        source,
+        re.IGNORECASE,
+    ):
+        tracking = _normalize_ups_candidate(match.group(1))
+        if tracking:
+            return tracking
 
+    compact = re.sub(r"[^A-Z0-9]", "", source.upper())
+    for bad_prefix in ("IZ", "I2", "12", "LZ"):
+        compact = compact.replace(bad_prefix, "1Z")
     match = re.search(r"1Z[A-Z0-9]{16}", compact)
     if match:
         return match.group(0)
 
-    spaced = re.findall(r"\b(\d{4})\s+(\d{4})\s+(\d{4})\b", text)
-    if spaced:
-        return "".join(spaced[0])
+    # FedEx commonly appears as 12 digits in 4-4-4 groups.
+    for match in re.finditer(r"\b(\d{4})\s+(\d{4})\s+(\d{4})\b", source):
+        return "".join(match.groups())
 
-    numeric_text = re.sub(r"(?<=\d)\s+(?=\d)", "", text)
-    matches = re.findall(r"\b[0-9]{12,15}\b", numeric_text)
+    # USPS commonly has 20-22 digits and is printed in spaced groups.
+    for line in source.splitlines():
+        if re.search(r"USPS|TRACKING", line, re.IGNORECASE):
+            digits = re.sub(r"\D", "", line)
+            if 20 <= len(digits) <= 34:
+                return digits
 
-    for number in matches:
-        if number.startswith(("7", "6", "9")):
-            return number
+    digits_only = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", source)
+    candidates = re.findall(r"\b\d{10,34}\b", digits_only)
 
-    return matches[0] if matches else ""
+    # Prefer common FedEx/USPS/Brinks length ranges, but avoid ZIP codes etc.
+    preferred_lengths = (12, 15, 20, 22, 11, 10)
+    for length in preferred_lengths:
+        for candidate in candidates:
+            if len(candidate) == length:
+                return candidate
 
-def _ocr_image(image_path):
-    image = Image.open(image_path)
-    try:
-        return pytesseract.image_to_string(image)
-    finally:
-        image.close()
+    return candidates[0] if candidates else ""
 
+def _ocr_pil_image(image):
+    gray = image.convert("L")
+    texts = []
+    for angle in (0, 90, 270):
+        rotated = gray if angle == 0 else gray.rotate(angle, expand=True, fillcolor=255)
+        for psm in (6, 11):
+            texts.append(
+                pytesseract.image_to_string(
+                    rotated,
+                    config=f"--oem 3 --psm {psm}",
+                )
+            )
+    return "\n".join(texts)
 
 def extract_fields(text):
     data = {
@@ -118,21 +142,33 @@ def extract_fields(text):
 
     data["Tracking Number"] = extract_tracking_number(text)
 
-    # PO Number
-    match = re.search(
-        r"\bP[\s.]*[O0][\s:]*([0-9]{5,})",
+    # PO Number, including Brinks abbreviated lists such as:
+    # PO # 86100087, 89, 90, 107
+    po_line_match = re.search(
+        r"\bP[\s.]*[O0]\s*#?\s*[:\-]?\s*"
+        r"([0-9]{5,}(?:\s*[,;/]\s*[0-9]{1,8})+|[0-9]{5,})",
         text,
         re.IGNORECASE,
     )
-    if match:
-        data["PO Number"] = match.group(1).strip()
+    if po_line_match:
+        raw_po = po_line_match.group(1).strip()
+        parts = re.findall(r"\d+", raw_po)
+        if parts:
+            first = parts[0]
+            expanded = [first]
+            for suffix in parts[1:]:
+                if len(suffix) < len(first):
+                    expanded.append(first[:-len(suffix)] + suffix)
+                else:
+                    expanded.append(suffix)
+            data["PO Number"] = ", ".join(expanded)
 
     if not data["PO Number"]:
         for line in text.splitlines():
             if re.search(r"\bP[\s.]*[O0]\b", line, re.IGNORECASE):
-                numbers = re.findall(r"\d{5,}", line)
-                if numbers:
-                    data["PO Number"] = numbers[0]
+                values = re.findall(r"\d{5,}", line)
+                if values:
+                    data["PO Number"] = values[0]
                     break
 
     # INV Number
@@ -156,38 +192,28 @@ def extract_fields(text):
 
 
 def get_po_and_tracking(pdf_path):
-    """
-    Return one result dictionary per PDF page.
-    """
+    """Return tracking, PO, and INV data for every PDF page."""
     if POPPLER_PATH is None:
         raise FileNotFoundError(
-            "Poppler was not found. Expected bundled path: "
+            "Poppler was not found. Expected bundled folder: "
             f"{_BUNDLED_POPPLER}"
         )
 
     images = convert_from_path(
         pdf_path,
+        dpi=300,
         poppler_path=POPPLER_PATH,
     )
 
     results = []
-
-    for index, image in enumerate(images):
-        image_path = f"{pdf_path}_page{index}.png"
-
+    for image in images:
         try:
-            image.save(image_path)
-            text = _ocr_image(image_path)
+            text = _ocr_pil_image(image)
             results.append(extract_fields(text))
         finally:
             try:
                 image.close()
             except Exception:
-                pass
-
-            try:
-                os.remove(image_path)
-            except OSError:
                 pass
 
     return results

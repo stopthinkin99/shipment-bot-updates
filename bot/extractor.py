@@ -69,13 +69,27 @@ def extract_text(pdf_path: str) -> str:
         poppler_path=POPPLER_PATH,
     )
 
-    full_text = ""
-    for img in images:
-        img = _preprocess(img)
-        # OEM 3 = best LSTM engine, PSM 6 = uniform block of text
-        text = pytesseract.image_to_string(img, config=r"--oem 3 --psm 6")
-        full_text += text + "\n"
+    full_text_parts = []
+    for source_image in images:
+        try:
+            for angle in (0, 90, 270):
+                rotated = (
+                    source_image
+                    if angle == 0
+                    else source_image.rotate(angle, expand=True, fillcolor="white")
+                )
+                image = _preprocess(rotated)
+                for psm in (6, 11):
+                    full_text_parts.append(
+                        pytesseract.image_to_string(
+                            image,
+                            config=f"--oem 3 --psm {psm}",
+                        )
+                    )
+        finally:
+            source_image.close()
 
+    full_text = "\n".join(full_text_parts)
     print("\nOCR OUTPUT:")
     print(full_text)
     return full_text
