@@ -46,6 +46,10 @@ SHEET_TO_RECIPIENTS = {
         "alex@unidesignusa.com",
         "hemi@unidesignusa.com",
         "gayatri.jariwala@fenixdiamonds.com",
+        "aayan.boradia@unidesignusa.com",
+        "cesar.villar@unidesignusa.com",
+        "fx.transaction@egonservices.com",
+        "diana.torres@unidesignusa.com",
     ],
     "EMBY": [
         "sujit.das@embyintl.com",
@@ -60,11 +64,13 @@ SHEET_TO_RECIPIENTS = {
         "gayatri.jariwala@fenixdiamonds.com",
         "shwe@fenixdiamonds.com",
         "sales@fenixdiamonds.com",
-        "cesar.villar@fenixdiamonds.com",
+        "cesar.villar@unidesignusa.com",
         "hemant.jhaveri@fenixdiamonds.com",
+        "fx.transaction@egonservices.com",
+        "diana.torres@unidesignusa.com",
     ],
     "SOL": [
-        "shipping@unidesignusa.com",
+        "Igor@savransky.com",
     ],
 }
 
