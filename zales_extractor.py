@@ -23,7 +23,7 @@ import numpy as np
 import pytesseract
 
 
-EXTRACTOR_VERSION = "2026-07-17.3"
+EXTRACTOR_VERSION = "2026-07-17.4"
 
 _BASE_DIR = (
     Path(sys.executable).parent
@@ -145,35 +145,120 @@ def _normalize_tracking(value):
 
 
 def _extract_tracking(text):
-    for line in str(text or "").splitlines():
+    """
+    Extract a UPS number from OCR text.
+
+    This accepts the normal spaced form:
+        1Z Y99 G35 29 3066 3817
+
+    It also tolerates OCR splitting TRACKING and the number across adjacent
+    lines, but only inside text supplied by the selected UPS label/crop.
+    """
+    source = str(text or "")
+
+    # First try individual TRACKING lines.
+    lines = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip()
+    ]
+
+    for index, line in enumerate(lines):
         if not re.search(r"\bTRACKING\b", line, re.IGNORECASE):
             continue
 
-        match = re.search(
-            r"([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})",
-            line,
-            re.IGNORECASE,
+        # Include the next line in case OCR split the number.
+        candidate_text = line
+        if index + 1 < len(lines):
+            candidate_text += " " + lines[index + 1]
+
+        compact = re.sub(
+            r"[^A-Z0-9]",
+            "",
+            candidate_text.upper(),
         )
 
-        if match:
-            tracking = _normalize_tracking(match.group(1))
+        # Find the 18-character UPS value after TRACKING.
+        for prefix in ("1Z", "IZ", "I2", "12", "LZ"):
+            position = compact.find(prefix)
+            if position == -1:
+                continue
+
+            candidate = compact[position:position + 18]
+            tracking = _normalize_tracking(candidate)
+
             if tracking:
                 return tracking
 
-    # Safe bounded fallback inside the selected label only.
-    for match in re.finditer(
-        r"(?<![A-Z0-9])"
-        r"([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})"
-        r"(?![A-Z0-9])",
-        str(text or ""),
-        re.IGNORECASE,
-    ):
-        tracking = _normalize_tracking(match.group(1))
-        if tracking:
-            return tracking
+    # Safe fallback within the selected label/crop only.
+    compact = re.sub(r"[^A-Z0-9]", "", source.upper())
+
+    for prefix in ("1Z", "IZ", "I2", "12", "LZ"):
+        start_at = 0
+
+        while True:
+            position = compact.find(prefix, start_at)
+            if position == -1:
+                break
+
+            candidate = compact[position:position + 18]
+            tracking = _normalize_tracking(candidate)
+
+            if tracking:
+                return tracking
+
+            start_at = position + 2
 
     return ""
 
+
+def _extract_tracking_from_crop(label_image):
+    """
+    OCR only the narrow UPS service/tracking band.
+
+    On an upright UPS label this band sits directly below the routing box and
+    directly above the large linear barcode. Multiple crop ranges are tried
+    because browser print scaling can move the label slightly.
+    """
+    height, width = label_image.shape[:2]
+
+    crop_ranges = (
+        # Main expected tracking band.
+        (0.43, 0.61, 0.00, 0.88),
+        # Slightly taller fallback.
+        (0.39, 0.66, 0.00, 0.92),
+        # Whole middle band fallback.
+        (0.32, 0.70, 0.00, 0.95),
+    )
+
+    for top, bottom, left, right in crop_ranges:
+        crop = label_image[
+            int(height * top):int(height * bottom),
+            int(width * left):int(width * right),
+        ]
+
+        if crop.size == 0:
+            continue
+
+        for psm in (6, 7, 11, 12):
+            crop_text = _ocr(
+                crop,
+                psm=psm,
+                scale=2.5,
+            )
+
+            tracking = _extract_tracking(crop_text)
+
+            print(
+                f"[ZALES TRACKING CROP] "
+                f"range=({top:.2f},{bottom:.2f}) "
+                f"psm={psm} tracking={tracking!r}"
+            )
+
+            if tracking:
+                return tracking
+
+    return ""
 
 def _extract_reference(text):
     match = re.search(
@@ -360,6 +445,7 @@ def _select_label(page_image):
 
 def parse_zales_label(
     text,
+    label_image,
     filename,
     page,
     *,
@@ -371,7 +457,11 @@ def parse_zales_label(
         "Source File": filename,
         "Page": page,
         "Sheet": "FENIX",
-        "Tracking Number": tracking or _extract_tracking(text),
+        "Tracking Number": (
+            tracking
+            or _extract_tracking_from_crop(label_image)
+            or _extract_tracking(text)
+        ),
         "PO Number": reference or _extract_reference(text),
         "Recipient Company": recipient or _extract_recipient(text),
         "INV Number": "",
@@ -420,6 +510,7 @@ def extract_zales_from_file(file_path):
             records.append(
                 parse_zales_label(
                     selected["text"],
+                    selected["image"],
                     filename,
                     page_index,
                     recipient=selected["recipient"],
