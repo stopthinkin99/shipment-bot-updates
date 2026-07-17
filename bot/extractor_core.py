@@ -312,18 +312,41 @@ def parse_core_fields(text, filename, page):
     # Recipient Company
     recipient = _extract_ship_to_company(text)
 
-    # Fallback for older "TO ..." layouts.
+    # Fallback for inline layouts such as: TO REEDS GWLERS
     if not recipient:
         lines = text.splitlines()
 
         for i, line in enumerate(lines):
-            if re.match(r'^\s*TO\s+\S+', line, re.IGNORECASE):
-                for candidate in lines[i + 1:]:
-                    candidate = candidate.strip()
-                    if candidate:
-                        recipient = candidate
-                        break
+            inline = re.match(
+                r'^\s*TO\s*[:\-]?\s+(.+?)\s*$',
+                line,
+                re.IGNORECASE,
+            )
+
+            if not inline:
+                continue
+
+            candidate = inline.group(1).strip(" .,:;-")
+
+            if (
+                len(re.findall(r'[A-Za-z]', candidate)) >= 3
+                and not re.search(
+                    r'\b(?:ST|STREET|AVE|AVENUE|RD|ROAD|BLVD|'
+                    r'DR|DRIVE|LANE|LN)\b',
+                    candidate,
+                    re.IGNORECASE,
+                )
+            ):
+                recipient = candidate
                 break
+
+            for following in lines[i + 1:]:
+                following = following.strip()
+                if following:
+                    recipient = following
+                    break
+
+            break
 
     # Final fallback: formal all-caps company name.
     if not recipient:

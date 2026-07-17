@@ -55,23 +55,51 @@ os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 def _normalize_ups_candidate(value):
     candidate = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
-    # Common OCR substitutions for UPS prefix.
     if candidate.startswith(("IZ", "I2", "12", "LZ")):
         candidate = "1Z" + candidate[2:]
 
-    # UPS numbers are always 18 characters: 1Z + 16 alphanumerics.
-    match = re.search(r"1Z[A-Z0-9]{16}", candidate)
-    return match.group(0) if match else ""
+    # UPS numbers must be exactly 18 characters.
+    if re.fullmatch(r"1Z[A-Z0-9]{16}", candidate):
+        return candidate
+
+    return ""
 
 
 def extract_tracking_number(text):
-    """Extract UPS, FedEx, USPS, or other long carrier tracking numbers."""
+    """
+    Extract tracking safely.
+
+    Never compact the entire OCR page and search for 1Z because that can
+    join unrelated fields into a fake value such as:
+        1Z + phone number + SHIP DATE
+    """
     source = str(text or "")
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
 
-    # UPS: prioritize text printed after TRACKING / TRACKING #.
+    # UPS: require a real TRACKING line.
+    for line in lines:
+        if not re.search(
+            r"\bTRACKING(?:\s+NO\.?|\s+NUMBER)?\s*#?",
+            line,
+            re.IGNORECASE,
+        ):
+            continue
+
+        match = re.search(
+            r"([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})",
+            line,
+            re.IGNORECASE,
+        )
+        if match:
+            tracking = _normalize_ups_candidate(match.group(1))
+            if tracking:
+                return tracking
+
+    # UPS fallback: bounded standalone 1Z + 16 characters.
     for match in re.finditer(
-        r"TRACKING(?:\s+NO\.?|\s+NUMBER)?\s*#?\s*[:\-]?\s*"
-        r"([1IL][Z2][A-Z0-9\s\-]{12,45})",
+        r"(?<![A-Z0-9])"
+        r"([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})"
+        r"(?![A-Z0-9])",
         source,
         re.IGNORECASE,
     ):
@@ -79,45 +107,60 @@ def extract_tracking_number(text):
         if tracking:
             return tracking
 
-    # UPS fallback anywhere in OCR text, allowing spaces between every group.
+    # FedEx: prioritize the TRK# / TRACKING line.
+    for line in lines:
+        if not re.search(r"\b(?:TRK|TRACKING)\s*#?", line, re.IGNORECASE):
+            continue
+
+        grouped = re.search(
+            r"(?<!\d)(\d{4})\s+(\d{4})\s+(\d{4})(?!\d)",
+            line,
+        )
+        if grouped:
+            return "".join(grouped.groups())
+
+        candidates = re.findall(r"(?<!\d)(\d{12}|\d{15})(?!\d)", line)
+        if candidates:
+            return candidates[-1]
+
+    # FedEx generic 4-4-4 pattern.
     for match in re.finditer(
-        r"\b([1IL][Z2](?:[\s\-]*[A-Z0-9]){16})\b",
+        r"(?<!\d)(\d{4})\s+(\d{4})\s+(\d{4})(?!\d)",
         source,
-        re.IGNORECASE,
     ):
-        tracking = _normalize_ups_candidate(match.group(1))
-        if tracking:
-            return tracking
-
-    compact = re.sub(r"[^A-Z0-9]", "", source.upper())
-    for bad_prefix in ("IZ", "I2", "12", "LZ"):
-        compact = compact.replace(bad_prefix, "1Z")
-    match = re.search(r"1Z[A-Z0-9]{16}", compact)
-    if match:
-        return match.group(0)
-
-    # FedEx commonly appears as 12 digits in 4-4-4 groups.
-    for match in re.finditer(r"\b(\d{4})\s+(\d{4})\s+(\d{4})\b", source):
         return "".join(match.groups())
 
-    # USPS commonly has 20-22 digits and is printed in spaced groups.
-    for line in source.splitlines():
-        if re.search(r"USPS|TRACKING", line, re.IGNORECASE):
+    # FedEx continuous 12/15 digits only when the page is clearly FedEx.
+    if re.search(
+        r"\b(?:FEDEX|FED\s*EX|STANDARD\s+OVERNIGHT|"
+        r"PRIORITY\s+OVERNIGHT)\b",
+        source,
+        re.IGNORECASE,
+    ):
+        for line in lines:
+            match = re.search(r"(?<!\d)(\d{12}|\d{15})(?!\d)", line)
+            if match:
+                return match.group(1)
+
+    # USPS.
+    if re.search(r"\bUSPS\b", source, re.IGNORECASE):
+        for line in lines:
             digits = re.sub(r"\D", "", line)
-            if 20 <= len(digits) <= 34:
+            if len(digits) in {20, 22}:
                 return digits
 
-    digits_only = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", source)
-    candidates = re.findall(r"\b\d{10,34}\b", digits_only)
+    # Brinks/armored labeled tracking.
+    for line in lines:
+        if re.search(
+            r"\b(?:TRACKING\s*NO|HAWB\s*NUMBER)\b",
+            line,
+            re.IGNORECASE,
+        ):
+            digits = re.sub(r"\D", "", line)
+            if 8 <= len(digits) <= 15:
+                return digits
 
-    # Prefer common FedEx/USPS/Brinks length ranges, but avoid ZIP codes etc.
-    preferred_lengths = (12, 15, 20, 22, 11, 10)
-    for length in preferred_lengths:
-        for candidate in candidates:
-            if len(candidate) == length:
-                return candidate
-
-    return candidates[0] if candidates else ""
+    return ""
 
 def _ocr_pil_image(image):
     gray = image.convert("L")
