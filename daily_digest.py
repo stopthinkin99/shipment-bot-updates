@@ -20,7 +20,6 @@ Requires:
 import html
 import json
 import os
-import re
 import shutil
 import tempfile
 import threading
@@ -78,17 +77,6 @@ SHEET_TO_RECIPIENTS = {
 # If True, sheets with no shipments today are skipped.
 # If False, the configured recipients receive a "no shipments today" email.
 SKIP_EMPTY_SHEETS = True
-
-SEND_INDIVIDUALLY = True
-MAIL_RETRY_ATTEMPTS = 3
-MAIL_RETRY_WAIT_SECONDS = 3
-
-_EMAIL_PATTERN = re.compile(
-    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
-    r"[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?"
-    r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
-    re.IGNORECASE,
-)
 
 
 # ------------------------------------------------------------------ #
@@ -339,111 +327,90 @@ def _build_html(sheet_key, shipments, today):
 
 
 def _clean_recipient_list(sheet_key):
-    cleaned = []
+    """
+    Return unique recipient addresses while preserving the configured order.
+    """
+    recipients = []
     seen = set()
 
     for supplied in SHEET_TO_RECIPIENTS.get(sheet_key, []):
         address = str(supplied or "").strip()
+
         if not address:
             continue
 
         key = address.lower()
+
         if key in seen:
             continue
 
         seen.add(key)
+        recipients.append(address)
 
-        if _EMAIL_PATTERN.fullmatch(address):
-            cleaned.append(address)
-
-    return cleaned
-
-
-def _send_one_recipient(recipient, subject, body, *, log=print):
-    last_error = ""
-
-    for attempt in range(1, MAIL_RETRY_ATTEMPTS + 1):
-        try:
-            send_email(
-                recipients=[recipient],
-                subject=subject,
-                body=body,
-                html=True,
-                log_fn=log,
-            )
-            log(
-                f"[DIGEST MAIL] ACCEPTED: {recipient} "
-                f"(attempt {attempt})"
-            )
-            return True, ""
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            log(
-                f"[DIGEST MAIL] Attempt {attempt}/"
-                f"{MAIL_RETRY_ATTEMPTS} failed for "
-                f"{recipient}: {last_error}"
-            )
-            if attempt < MAIL_RETRY_ATTEMPTS:
-                time.sleep(MAIL_RETRY_WAIT_SECONDS)
-
-    log(f"[DIGEST MAIL] FAILED: {recipient}: {last_error}")
-    return False, last_error
+    return recipients
 
 
 def send_group_digest(
     sheet_key,
     shipments,
     today,
-    outlook=None,
+    outlook=None,  # retained for compatibility with older callers
     log=print,
 ):
+    """
+    Send exactly one shared digest message for the sheet.
+
+    The first configured address is placed in To.
+    Every other group member is placed in CC.
+
+    This creates one email conversation with all group members visible,
+    rather than a separate message for each person.
+    """
     del outlook
 
-    recipients = _clean_recipient_list(sheet_key)
+    group_members = _clean_recipient_list(sheet_key)
 
-    if not recipients:
-        return False, f"{sheet_key}: no valid recipient email addresses configured"
+    if not group_members:
+        return False, f"{sheet_key}: no recipient email addresses configured"
+
+    to_recipients = [group_members[0]]
+    cc_recipients = group_members[1:]
 
     subject = (
         f"Shipments Sent Today - {sheet_key} - "
         f"{today.strftime('%m/%d/%Y')}"
     )
-    body = _build_html(sheet_key, shipments, today)
 
     log(
-        f"[DIGEST MAIL] {sheet_key}: sending individually to "
-        f"{len(recipients)} recipient(s)."
+        f"[DIGEST MAIL] {sheet_key}: sending one group message "
+        f"to {len(group_members)} participant(s)."
+    )
+    log(
+        f"[DIGEST MAIL] {sheet_key} TO: "
+        + ", ".join(to_recipients)
     )
 
-    successful = []
-    failed = []
-
-    for recipient in recipients:
-        ok, error = _send_one_recipient(
-            recipient,
-            subject,
-            body,
-            log=log,
+    if cc_recipients:
+        log(
+            f"[DIGEST MAIL] {sheet_key} CC: "
+            + ", ".join(cc_recipients)
         )
 
-        if ok:
-            successful.append(recipient)
-        else:
-            failed.append((recipient, error))
-
-    information = (
-        f"{sheet_key}: accepted for {len(successful)}/"
-        f"{len(recipients)} recipient(s); "
-        f"{len(failed)} immediate failure(s); "
-        f"{len(shipments)} shipment row(s)"
+    send_email(
+        recipients=to_recipients,
+        cc=cc_recipients,
+        subject=subject,
+        body=_build_html(sheet_key, shipments, today),
+        html=True,
+        log_fn=log,
     )
 
-    if failed:
-        information += "; failed: " + ", ".join(
-            address for address, _ in failed
-        )
-
-    return not failed, information
+    return (
+        True,
+        f"{sheet_key}: one group message accepted for "
+        f"{len(group_members)} participant(s) "
+        f"({len(shipments)} shipment row(s))",
+    )
 
 
 def run_daily_digest(excel_path, today=None, log=print):
@@ -454,9 +421,9 @@ def run_daily_digest(excel_path, today=None, log=print):
     """
     today = today or date.today()
 
-    log("[DIGEST] Recipient delivery mode: INDIVIDUAL")
+    log("[DIGEST] Recipient delivery mode: ONE GROUP MESSAGE PER SHEET")
     log(
-        "[DIGEST] Configured recipient counts: "
+        "[DIGEST] Configured group sizes: "
         + ", ".join(
             f"{sheet}={len(_clean_recipient_list(sheet))}"
             for sheet in SHEET_TO_RECIPIENTS
