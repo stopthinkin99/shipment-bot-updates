@@ -48,7 +48,7 @@ SHEET_TO_RECIPIENTS = {
         "gayatri.jariwala@fenixdiamonds.com",
         "aayan.boradia@unidesignusa.com",
         "cesar.villar@unidesignusa.com",
-        "fx.transaction@egonservices.com",
+        "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
     ],
     "EMBY": [
@@ -66,7 +66,7 @@ SHEET_TO_RECIPIENTS = {
         "sales@fenixdiamonds.com",
         "cesar.villar@unidesignusa.com",
         "hemant.jhaveri@fenixdiamonds.com",
-        "fx.transaction@egonservices.com",
+        "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
     ],
     "SOL": [
