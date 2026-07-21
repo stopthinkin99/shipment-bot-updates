@@ -78,6 +78,11 @@ SHEET_TO_RECIPIENTS = {
 # If False, the configured recipients receive a "no shipments today" email.
 SKIP_EMPTY_SHEETS = True
 
+# TEMPORARY TEST MODE:
+# True  = show exactly who would receive each digest, but do not send.
+# False = send the real group emails.
+DIGEST_PREVIEW_ONLY = True
+
 
 # ------------------------------------------------------------------ #
 #  WORKBOOK COLUMN CONFIGURATION
@@ -243,23 +248,6 @@ def collect_by_sheet(excel_path, today=None):
     Only configured sheets are considered.
     """
     today = today or date.today()
-    log(
-        "[DIGEST CONFIG] "
-        + ", ".join(
-            f"{sheet}={len(addresses)}"
-            for sheet, addresses in SHEET_TO_RECIPIENTS.items()
-        )
-    )
-
-    log(
-        "[DIGEST CONFIG] SOL="
-        + ", ".join(SHEET_TO_RECIPIENTS.get("SOL", []))
-    )
-
-    log(
-        "[DIGEST CONFIG] FENIX="
-        + ", ".join(SHEET_TO_RECIPIENTS.get("FENIX", []))
-    )
     workbook, temporary_path = _open_workbook(excel_path)
     result = {}
 
@@ -345,7 +333,7 @@ def _build_html(sheet_key, shipments, today):
 
 def _clean_recipient_list(sheet_key):
     """
-    Return unique recipient addresses while preserving the configured order.
+    Return unique recipient addresses while preserving configured order.
     """
     recipients = []
     seen = set()
@@ -375,13 +363,10 @@ def send_group_digest(
     log=print,
 ):
     """
-    Send exactly one shared digest message for the sheet.
+    Preview or send exactly one shared digest message per sheet.
 
-    The first configured address is placed in To.
-    Every other group member is placed in CC.
-
-    This creates one email conversation with all group members visible,
-    rather than a separate message for each person.
+    First configured address -> TO
+    Remaining addresses       -> CC
     """
     del outlook
 
@@ -397,6 +382,45 @@ def send_group_digest(
         f"Shipments Sent Today - {sheet_key} - "
         f"{today.strftime('%m/%d/%Y')}"
     )
+
+    if DIGEST_PREVIEW_ONLY:
+        log(
+            f"[DIGEST PREVIEW] {sheet_key}: "
+            f"one group email would be prepared"
+        )
+        log(
+            f"[DIGEST PREVIEW] {sheet_key} TO: "
+            + ", ".join(to_recipients)
+        )
+
+        if cc_recipients:
+            log(
+                f"[DIGEST PREVIEW] {sheet_key} CC: "
+                + ", ".join(cc_recipients)
+            )
+        else:
+            log(
+                f"[DIGEST PREVIEW] {sheet_key} CC: —"
+            )
+
+        log(
+            f"[DIGEST PREVIEW] {sheet_key} SUBJECT: {subject}"
+        )
+        log(
+            f"[DIGEST PREVIEW] {sheet_key}: "
+            f"{len(group_members)} total recipient(s), "
+            f"{len(shipments)} shipment row(s)"
+        )
+        log(
+            f"[DIGEST PREVIEW] {sheet_key}: "
+            "EMAIL NOT SENT — preview mode is enabled"
+        )
+
+        return (
+            True,
+            f"{sheet_key}: previewed {len(group_members)} recipient(s) "
+            f"({len(shipments)} shipment row(s)); no email sent",
+        )
 
     log(
         f"[DIGEST MAIL] {sheet_key}: sending one group message "
@@ -424,7 +448,7 @@ def send_group_digest(
 
     return (
         True,
-        f"{sheet_key}: one group message accepted for "
+        f"{sheet_key}: one group message sent to "
         f"{len(group_members)} participant(s) "
         f"({len(shipments)} shipment row(s))",
     )
@@ -438,7 +462,8 @@ def run_daily_digest(excel_path, today=None, log=print):
     """
     today = today or date.today()
 
-    log("[DIGEST] Recipient delivery mode: ONE GROUP MESSAGE PER SHEET")
+    mode = "PREVIEW ONLY — NO EMAILS WILL BE SENT" if DIGEST_PREVIEW_ONLY else "LIVE SEND"
+    log(f"[DIGEST] Mode: {mode}")
     log(
         "[DIGEST] Configured group sizes: "
         + ", ".join(
@@ -446,6 +471,17 @@ def run_daily_digest(excel_path, today=None, log=print):
             for sheet in SHEET_TO_RECIPIENTS
         )
     )
+
+    for sheet in SHEET_TO_RECIPIENTS:
+        recipients = _clean_recipient_list(sheet)
+        if recipients:
+            log(
+                f"[DIGEST CONFIG] {sheet} TO: {recipients[0]}"
+            )
+            log(
+                f"[DIGEST CONFIG] {sheet} CC: "
+                + (", ".join(recipients[1:]) if len(recipients) > 1 else "—")
+            )
 
     if not excel_path:
         message = "Digest failed: Excel path is empty."
