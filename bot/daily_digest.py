@@ -243,6 +243,23 @@ def collect_by_sheet(excel_path, today=None):
     Only configured sheets are considered.
     """
     today = today or date.today()
+    log(
+        "[DIGEST CONFIG] "
+        + ", ".join(
+            f"{sheet}={len(addresses)}"
+            for sheet, addresses in SHEET_TO_RECIPIENTS.items()
+        )
+    )
+
+    log(
+        "[DIGEST CONFIG] SOL="
+        + ", ".join(SHEET_TO_RECIPIENTS.get("SOL", []))
+    )
+
+    log(
+        "[DIGEST CONFIG] FENIX="
+        + ", ".join(SHEET_TO_RECIPIENTS.get("FENIX", []))
+    )
     workbook, temporary_path = _open_workbook(excel_path)
     result = {}
 
