@@ -81,7 +81,7 @@ SKIP_EMPTY_SHEETS = True
 # TEMPORARY TEST MODE:
 # True  = show exactly who would receive each digest, but do not send.
 # False = send the real group emails.
-DIGEST_PREVIEW_ONLY = True
+DIGEST_PREVIEW_ONLY = False
 
 
 # ------------------------------------------------------------------ #
