@@ -9,7 +9,6 @@ import sys
 import os
 from pathlib import Path
 import threading
-from daily_digest import DigestScheduler, run_daily_digest, load_digest_time, save_digest_time
 
 _APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) \
            else Path(__file__).parent
@@ -21,6 +20,17 @@ if str(_APP_DIR) not in sys.path:
 # ------------------------------------------------------------------ #
 from updater import sync_all_files
 sync_all_files(print)   # console log; GUI log wired in after window opens
+
+import importlib
+import daily_digest
+
+importlib.invalidate_caches()
+importlib.reload(daily_digest)
+
+DigestScheduler = daily_digest.DigestScheduler
+run_daily_digest = daily_digest.run_daily_digest
+load_digest_time = daily_digest.load_digest_time
+save_digest_time = daily_digest.save_digest_time
 
 import json
 import threading
