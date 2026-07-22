@@ -506,4 +506,4 @@ def save_to_excel(records, output_filename):
                         max_length = len(str(cell.value))
                 except Exception:
                     pass
-            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 
+            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 60)
