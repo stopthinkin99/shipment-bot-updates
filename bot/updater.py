@@ -54,6 +54,7 @@ SYNCED_FILES = [
     "cleanup.py",
     "daily_digest.py",
     "email_sender.py",
+    "manual_review_dialog.py",
 ]
 
 

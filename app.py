@@ -41,6 +41,21 @@ import datetime
 import winreg
 from cleanup import start_cleanup_thread
 
+
+def _show_manual_review(parent, pdf_path, record):
+    # Imported lazily so the GitHub-synced version is used.
+    import importlib
+    import manual_review_dialog
+
+    importlib.invalidate_caches()
+    importlib.reload(manual_review_dialog)
+
+    return manual_review_dialog.show_manual_review(
+        parent,
+        pdf_path,
+        record,
+    )
+
 # ------------------------------------------------------------------ #
 #  PATHS
 # ------------------------------------------------------------------ #
@@ -107,9 +122,16 @@ def _get_autostart() -> bool:
 # ------------------------------------------------------------------ #
 class _LabelHandler:
     """Thin wrapper — import processor lazily so updates take effect."""
-    def __init__(self, log_fn, excel_path: str):
+
+    def __init__(
+        self,
+        log_fn,
+        excel_path: str,
+        review_callback,
+    ):
         self.log = log_fn
         self.excel_path = excel_path
+        self.review_callback = review_callback
 
     def dispatch(self, path: str):
         if not path.lower().endswith(".pdf"):
@@ -123,6 +145,7 @@ class _LabelHandler:
                 path,
                 excel_path=self.excel_path,
                 log_fn=self.log,
+                review_callback=self.review_callback,
             )
 
             if not records:
@@ -160,11 +183,21 @@ class _LabelHandler:
 
 
 class WatcherThread(threading.Thread):
-    def __init__(self, folder: str, excel_path: str, log_fn):
+    def __init__(
+        self,
+        folder: str,
+        excel_path: str,
+        log_fn,
+        review_callback,
+    ):
         super().__init__(daemon=True)
         self.folder = folder
         self.excel_path = excel_path
-        self._handler = _LabelHandler(log_fn, excel_path)
+        self._handler = _LabelHandler(
+            log_fn,
+            excel_path,
+            review_callback,
+        )
         self._stop_evt = threading.Event()
         self._observer = None
 
@@ -208,7 +241,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Uni Creation — Shipment Bot — Excel Fix")
+        self.title("Uni Creation — Shipment Bot — Manual Review")
         self.configure(bg=self.C_BG)
         self.resizable(False, False)
 
@@ -358,6 +391,48 @@ class App(tk.Tk):
             self._start()
 
     # ---------------------------------------------------------------- #
+    #  MANUAL REVIEW
+    # ---------------------------------------------------------------- #
+    def _review_record(self, pdf_path: str, record: dict):
+        """
+        Called by the watcher thread when OCR leaves a required field blank.
+
+        Tkinter windows must be created on the main GUI thread. The watcher
+        waits here until the user clicks Done or Cancel.
+        """
+        completed = threading.Event()
+        result_holder = {"record": None}
+        error_holder = {"error": None}
+
+        def open_dialog():
+            try:
+                self._log(
+                    "[REVIEW] Opening manual-completion window for "
+                    f"{os.path.basename(pdf_path)}"
+                )
+                result_holder["record"] = _show_manual_review(
+                    self,
+                    pdf_path,
+                    record,
+                )
+            except Exception as exc:
+                error_holder["error"] = exc
+                self._log(
+                    "[REVIEW ERROR] Manual-review popup failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            finally:
+                completed.set()
+
+        self.after(0, open_dialog)
+        completed.wait()
+
+        if error_holder["error"] is not None:
+            raise error_holder["error"]
+
+        return result_holder["record"]
+
+    # ---------------------------------------------------------------- #
     #  ACTIONS
     # ---------------------------------------------------------------- #
     def _pick_folder(self):
@@ -397,7 +472,12 @@ class App(tk.Tk):
         self._save_cfg()
         self._stop()
 
-        self._watcher = WatcherThread(folder, excel, self._log)
+        self._watcher = WatcherThread(
+            folder,
+            excel,
+            self._log,
+            self._review_record,
+        )
         self._watcher.start()
 
         # Start 30-day cleanup thread (runs now, then every 24 hours)

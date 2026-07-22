@@ -131,19 +131,61 @@ _STOP_BLOCK_PATTERN = re.compile(
 )
 
 
+def _looks_like_address(line):
+    upper = str(line or "").upper()
+
+    if _ADDRESS_WORD_PATTERN.search(upper):
+        return True
+
+    if re.search(
+        r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b",
+        upper,
+    ):
+        return True
+
+    if re.fullmatch(r"[\d\s()+\-]+", str(line or "").strip()):
+        return True
+
+    return False
+
+
+def _looks_like_company(line):
+    value = str(line or "").strip()
+    upper = value.upper()
+
+    if not value:
+        return False
+
+    if _COMPANY_SUFFIX_PATTERN.search(value):
+        return True
+
+    company_keywords = re.compile(
+        r"\b(?:"
+        r"CREATION|DESIGN|DIAMOND|DIAMONDS|JEWEL|JEWELRY|"
+        r"INTERNATIONAL|INDUSTRIES|GROUP|SUPPLY|TRADING|"
+        r"MANUFACTURING|MFG|CORPORATION|COMPANY|CO|"
+        r"ASSOCIATES|ENTERPRISES|HOLDINGS|BRANDS"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    return bool(company_keywords.search(upper))
+
+
 def _extract_ship_to_company(text):
     """
-    Extract the actual company from the SHIP TO block.
+    Extract the company from a SEND TO / SHIP TO block.
 
     Example:
-        SHIP TO:
-        BRAND THIES
-        (401) 463-2509
-        SWAROVSKI AG.
-        7830 NATIONAL TURNPIKE
+        Send To: Aayan Boradia
+        Uni Creation
 
-    Returns:
-        SWAROVSKI AG
+    Result:
+        Uni Creation
+
+    The first line is usually a contact person. The extractor prefers the
+    following company-looking line and only falls back to the contact when
+    no company line is available.
     """
     lines = [
         line.strip()
@@ -151,35 +193,40 @@ def _extract_ship_to_company(text):
         if line.strip()
     ]
 
-    ship_to_index = None
+    marker_index = None
+    inline_contact = ""
 
     for index, line in enumerate(lines):
-        if re.search(r"\bSHIP\s*TO\s*:?", line, re.IGNORECASE):
-            ship_to_index = index
+        match = re.search(
+            r"\b(?:SHIP|SEND)\s*TO\s*:?\s*(.*)$",
+            line,
+            re.IGNORECASE,
+        )
+
+        if match:
+            marker_index = index
+            inline_contact = match.group(1).strip(" .,:;-")
             break
 
-    if ship_to_index is None:
+    if marker_index is None:
         return ""
 
     candidates = []
 
-    for line in lines[ship_to_index + 1:ship_to_index + 12]:
+    if inline_contact:
+        candidates.append(inline_contact)
+
+    for line in lines[marker_index + 1:marker_index + 12]:
         cleaned = line.strip()
         upper = cleaned.upper().strip(" .")
 
         if _STOP_BLOCK_PATTERN.search(upper):
             break
 
-        if re.fullmatch(r"[\d\s()+\-]+", cleaned):
-            continue
-
         if upper.startswith(("C/O ", "C/O:", "ATTN ", "ATTN:")):
             continue
 
-        if _ADDRESS_WORD_PATTERN.search(upper):
-            continue
-
-        if re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", upper):
+        if _looks_like_address(cleaned):
             continue
 
         letters = len(re.findall(r"[A-Z]", upper))
@@ -190,21 +237,25 @@ def _extract_ship_to_company(text):
 
         candidates.append(cleaned.rstrip(" ."))
 
-    for candidate in candidates:
-        if _COMPANY_SUFFIX_PATTERN.search(candidate):
+    if not candidates:
+        return ""
+
+    # Prefer company-looking lines after the contact.
+    for candidate in candidates[1:]:
+        if _looks_like_company(candidate):
             return candidate
 
-    company_keywords = re.compile(
-        r"\b(?:DIAMOND|JEWEL|JEWELRY|DESIGN|CREATION|"
-        r"INTERNATIONAL|INDUSTRIES|GROUP|SUPPLY)\b",
-        re.IGNORECASE,
-    )
-
+    # Then accept any company-looking line.
     for candidate in candidates:
-        if company_keywords.search(candidate):
+        if _looks_like_company(candidate):
             return candidate
 
-    return candidates[0] if candidates else ""
+    # When two clean lines remain, treat the first as the contact and the
+    # second as the company.
+    if len(candidates) >= 2:
+        return candidates[1]
+
+    return candidates[0]
 
 
 def parse_core_fields(text, filename, page):
@@ -455,4 +506,4 @@ def save_to_excel(records, output_filename):
                         max_length = len(str(cell.value))
                 except Exception:
                     pass
-            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 60)
+            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 
