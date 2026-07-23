@@ -39,8 +39,8 @@ class FedExCredentialsDialog(tk.Toplevel):
         self._build(); self.after(80, self._center)
 
     def _build(self):
-        header = tk.Frame(self, bg="#0d2137", height=62)
-        header.pack(fill="x")
+        header = tk.Frame(self, bg="#0d2137", height=66)
+        header.pack(side="top", fill="x")
         header.pack_propagate(False)
 
         tk.Label(
@@ -49,14 +49,13 @@ class FedExCredentialsDialog(tk.Toplevel):
             bg="#0d2137",
             fg="white",
             font=("Segoe UI", 15, "bold"),
-        ).pack(side="left", padx=20)
+        ).pack(side="left", padx=22)
 
-        # Footer is packed before the content area so the action buttons
-        # always remain visible, even when Windows display scaling is high.
+        # Always-visible footer.
         footer = tk.Frame(
             self,
             bg="#eef1f5",
-            height=72,
+            height=82,
             highlightthickness=1,
             highlightbackground="#d5dae2",
         )
@@ -72,13 +71,13 @@ class FedExCredentialsDialog(tk.Toplevel):
             activebackground="#d2d9e2",
             relief="flat",
             font=("Segoe UI", 10),
-            width=15,
+            width=16,
             cursor="hand2",
         ).pack(
             side="right",
-            padx=(8, 18),
-            pady=16,
-            ipady=7,
+            padx=(10, 20),
+            pady=18,
+            ipady=8,
         )
 
         tk.Button(
@@ -91,17 +90,60 @@ class FedExCredentialsDialog(tk.Toplevel):
             activeforeground="white",
             relief="flat",
             font=("Segoe UI", 10, "bold"),
-            width=20,
+            width=22,
             cursor="hand2",
         ).pack(
             side="right",
-            padx=(0, 0),
-            pady=16,
-            ipady=7,
+            pady=18,
+            ipady=8,
         )
 
-        content = tk.Frame(self, bg="#f4f6f9")
-        content.pack(fill="both", expand=True)
+        # Scrollable content area.
+        outer = tk.Frame(self, bg="#f4f6f9")
+        outer.pack(side="top", fill="both", expand=True)
+
+        canvas = tk.Canvas(
+            outer,
+            bg="#f4f6f9",
+            highlightthickness=0,
+            bd=0,
+        )
+        scrollbar = ttk.Scrollbar(
+            outer,
+            orient="vertical",
+            command=canvas.yview,
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = tk.Frame(canvas, bg="#f4f6f9")
+        content_window = canvas.create_window(
+            (0, 0),
+            window=content,
+            anchor="nw",
+        )
+
+        def update_scroll_region(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_content_width(event):
+            canvas.itemconfigure(
+                content_window,
+                width=max(event.width, 1),
+            )
+
+        content.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", fit_content_width)
+
+        def on_mousewheel(event):
+            canvas.yview_scroll(
+                int(-1 * (event.delta / 120)),
+                "units",
+            )
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
 
         tk.Label(
             content,
@@ -113,9 +155,14 @@ class FedExCredentialsDialog(tk.Toplevel):
             bg="#f4f6f9",
             fg="#4f5d6c",
             justify="left",
-            wraplength=640,
+            wraplength=680,
             font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=22, pady=(18, 12))
+        ).pack(
+            anchor="w",
+            fill="x",
+            padx=24,
+            pady=(20, 14),
+        )
 
         form = tk.Frame(
             content,
@@ -123,7 +170,12 @@ class FedExCredentialsDialog(tk.Toplevel):
             highlightthickness=1,
             highlightbackground="#d5dae2",
         )
-        form.pack(fill="both", expand=True, padx=22, pady=(0, 16))
+        form.pack(
+            fill="x",
+            expand=False,
+            padx=24,
+            pady=(0, 24),
+        )
         form.grid_columnconfigure(1, weight=1)
 
         row = 0
@@ -140,8 +192,8 @@ class FedExCredentialsDialog(tk.Toplevel):
                 column=0,
                 columnspan=2,
                 sticky="w",
-                padx=18,
-                pady=(18 if row == 0 else 22, 8),
+                padx=20,
+                pady=(22 if row == 0 else 26, 10),
             )
             row += 1
 
@@ -159,8 +211,8 @@ class FedExCredentialsDialog(tk.Toplevel):
                 row=row,
                 column=0,
                 sticky="w",
-                padx=(18, 8),
-                pady=5,
+                padx=(20, 10),
+                pady=6,
             )
 
             api_var = tk.StringVar(value=api_key)
@@ -175,9 +227,9 @@ class FedExCredentialsDialog(tk.Toplevel):
                 row=row,
                 column=1,
                 sticky="ew",
-                padx=(0, 18),
-                pady=5,
-                ipady=7,
+                padx=(0, 20),
+                pady=6,
+                ipady=8,
             )
             row += 1
 
@@ -193,8 +245,8 @@ class FedExCredentialsDialog(tk.Toplevel):
                 row=row,
                 column=0,
                 sticky="w",
-                padx=(18, 8),
-                pady=5,
+                padx=(20, 10),
+                pady=6,
             )
 
             secret_var = tk.StringVar()
@@ -210,9 +262,9 @@ class FedExCredentialsDialog(tk.Toplevel):
                 row=row,
                 column=1,
                 sticky="ew",
-                padx=(0, 18),
-                pady=5,
-                ipady=7,
+                padx=(0, 20),
+                pady=6,
+                ipady=8,
             )
             row += 1
 
@@ -232,28 +284,29 @@ class FedExCredentialsDialog(tk.Toplevel):
                 row=row,
                 column=1,
                 sticky="w",
-                padx=(0, 18),
-                pady=(0, 4),
+                padx=(0, 20),
+                pady=(1, 2),
             )
             row += 1
 
             tk.Label(
                 form,
                 text=(
-                    "Leave Secret Key blank to keep the currently saved "
-                    "secret."
+                    "Leave Secret Key blank to keep the currently saved secret."
                     if existing_secret
                     else "Enter the Secret Key shown in the FedEx portal."
                 ),
                 bg="white",
                 fg="#6a7480",
                 font=("Segoe UI", 8),
+                wraplength=500,
+                justify="left",
             ).grid(
                 row=row,
                 column=1,
                 sticky="w",
-                padx=(0, 18),
-                pady=(0, 4),
+                padx=(0, 20),
+                pady=(0, 8),
             )
             row += 1
 
@@ -262,6 +315,9 @@ class FedExCredentialsDialog(tk.Toplevel):
                 "secret_var": secret_var,
                 "has_existing_secret": bool(existing_secret),
             }
+
+        # Give the canvas time to calculate the full scrollable height.
+        self.after(50, update_scroll_region)
 
         self.bind("<Return>", lambda _event: self._save())
         self.bind("<Escape>", lambda _event: self._close())
