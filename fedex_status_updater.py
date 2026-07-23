@@ -4,12 +4,15 @@ import json, os, re, threading, time
 from datetime import date, datetime
 from pathlib import Path
 import openpyxl
+from openpyxl.styles import PatternFill
 from fedex_credentials import has_credentials
 from fedex_tracking import MAX_TRACKING_NUMBERS_PER_REQUEST, track_numbers
 
 SHEET_TO_PROFILE={"UNI":"UNI","FENIX":"FENIX"}
-COL_DATE=1; COL_CARRIER=4; COL_TRACKING=5; COL_REMARK=7
+COL_DATE=1; COL_CARRIER=4; COL_TRACKING=5; COL_REMARK=6
 FEDEX_RE=re.compile(r"\b(?:FEDEX|FED\s*EX|BX\s*FX|FX\s*S/O|FX\s*P/O|STANDARD\s+OVERNIGHT|PRIORITY\s+OVERNIGHT|FIRST\s+OVERNIGHT)\b",re.I)
+
+DELIVERED_FILL = PatternFill(fill_type="solid", fgColor="C6EFCE")
 
 def _settings_path():
     base=os.environ.get("LOCALAPPDATA"); folder=Path(base)/"UniCreation"/"ShipmentBot" if base else Path.home()/".uni_creation_shipment_bot"
@@ -70,6 +73,11 @@ def update_fedex_statuses(excel_path, *, environment="production", today=None, l
                 if not number:
                     continue
                 if status == "DELIVERED":
+                    # Delivered is final: do not call FedEx again.
+                    # Ensure the existing Remark cell is highlighted green.
+                    remark_cell = ws.cell(row, COL_REMARK)
+                    remark_cell.fill = DELIVERED_FILL
+                    changed = True
                     continue
                 if d is None:
                     log(
@@ -95,7 +103,16 @@ def update_fedex_statuses(excel_path, *, environment="production", today=None, l
                 if not result: continue
                 status=str(result.get("status") or "UNKNOWN").strip().upper()
                 if status==old: unchanged+=1; log(f"[FEDEX] {sheet_name} row {row}: {number} remains {status}"); continue
-                ws.cell(row,COL_REMARK).value=status; changed=True; updated+=1; log(f"[FEDEX] {sheet_name} row {row}: {number} → {status}")
+                remark_cell = ws.cell(row, COL_REMARK)
+                remark_cell.value = status
+                if status == "DELIVERED":
+                    remark_cell.fill = DELIVERED_FILL
+                changed = True
+                updated += 1
+                log(
+                    f"[FEDEX] {sheet_name} row {row}: "
+                    f"{number} → {status}"
+                )
         if changed: wb.save(excel_path); log("[FEDEX] Workbook saved successfully.")
         else: log("[FEDEX] No workbook changes were required.")
         msg=f"[FEDEX] Finished: updated={updated}, unchanged={unchanged}, failed={failed}."; log(msg)
