@@ -5,3 +5,4 @@ certifi
 msal
 requests
 keyring
+truststore
