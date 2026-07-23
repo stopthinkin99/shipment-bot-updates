@@ -39,24 +39,232 @@ class FedExCredentialsDialog(tk.Toplevel):
         self._build(); self.after(80, self._center)
 
     def _build(self):
-        header = tk.Frame(self, bg="#0d2137", height=58); header.pack(fill="x"); header.pack_propagate(False)
-        tk.Label(header, text="FedEx API Credentials", bg="#0d2137", fg="white", font=("Segoe UI",14,"bold")).pack(side="left", padx=18)
-        tk.Label(self, text="Stored securely in Windows Credential Manager for this Windows user. Nothing is saved in GitHub or config.json.", bg="#f4f6f9", fg="#4f5d6c", wraplength=560, justify="left", font=("Segoe UI",9)).pack(anchor="w", padx=20, pady=(16,10))
-        form = tk.Frame(self, bg="#f4f6f9"); form.pack(fill="x", padx=20); form.grid_columnconfigure(1, weight=1)
+        header = tk.Frame(self, bg="#0d2137", height=62)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        tk.Label(
+            header,
+            text="FedEx API Credentials",
+            bg="#0d2137",
+            fg="white",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(side="left", padx=20)
+
+        # Footer is packed before the content area so the action buttons
+        # always remain visible, even when Windows display scaling is high.
+        footer = tk.Frame(
+            self,
+            bg="#eef1f5",
+            height=72,
+            highlightthickness=1,
+            highlightbackground="#d5dae2",
+        )
+        footer.pack(side="bottom", fill="x")
+        footer.pack_propagate(False)
+
+        tk.Button(
+            footer,
+            text="Cancel",
+            command=self._close,
+            bg="#dfe5ec",
+            fg="#263342",
+            activebackground="#d2d9e2",
+            relief="flat",
+            font=("Segoe UI", 10),
+            width=15,
+            cursor="hand2",
+        ).pack(
+            side="right",
+            padx=(8, 18),
+            pady=16,
+            ipady=7,
+        )
+
+        tk.Button(
+            footer,
+            text="Save Credentials",
+            command=self._save,
+            bg="#1a7a3c",
+            fg="white",
+            activebackground="#146631",
+            activeforeground="white",
+            relief="flat",
+            font=("Segoe UI", 10, "bold"),
+            width=20,
+            cursor="hand2",
+        ).pack(
+            side="right",
+            padx=(0, 0),
+            pady=16,
+            ipady=7,
+        )
+
+        content = tk.Frame(self, bg="#f4f6f9")
+        content.pack(fill="both", expand=True)
+
+        tk.Label(
+            content,
+            text=(
+                "Enter the production API Key and Secret Key for each "
+                "FedEx project. Credentials are stored securely in "
+                "Windows Credential Manager for this Windows user."
+            ),
+            bg="#f4f6f9",
+            fg="#4f5d6c",
+            justify="left",
+            wraplength=640,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=22, pady=(18, 12))
+
+        form = tk.Frame(
+            content,
+            bg="white",
+            highlightthickness=1,
+            highlightbackground="#d5dae2",
+        )
+        form.pack(fill="both", expand=True, padx=22, pady=(0, 16))
+        form.grid_columnconfigure(1, weight=1)
+
         row = 0
+
         for profile in PROFILES:
-            api, secret = load_credentials(profile)
-            tk.Label(form, text=f"{profile} FedEx Project", bg="#f4f6f9", fg="#1b2735", font=("Segoe UI",11,"bold")).grid(row=row,column=0,columnspan=2,sticky="w",pady=(10 if row else 0,6)); row += 1
-            tk.Label(form,text="API Key:",bg="#f4f6f9",width=12,anchor="w").grid(row=row,column=0,sticky="w",pady=3)
-            api_var = tk.StringVar(value=api); tk.Entry(form,textvariable=api_var,width=55,font=("Segoe UI",9)).grid(row=row,column=1,sticky="ew",pady=3); row += 1
-            tk.Label(form,text="Secret Key:",bg="#f4f6f9",width=12,anchor="w").grid(row=row,column=0,sticky="w",pady=3)
-            secret_var = tk.StringVar(); tk.Entry(form,textvariable=secret_var,width=55,show="•",font=("Segoe UI",9)).grid(row=row,column=1,sticky="ew",pady=3); row += 1
-            status = "Saved" if api and secret else "Not configured"
-            tk.Label(form,text=f"Current status: {status}",bg="#f4f6f9",fg="#1a7a3c" if status=="Saved" else "#a02020",font=("Segoe UI",8)).grid(row=row,column=1,sticky="w",pady=(0,5)); row += 1
-            self.entries[profile] = (api_var, secret_var)
-        buttons = tk.Frame(self,bg="#f4f6f9"); buttons.pack(fill="x",padx=20,pady=18)
-        tk.Button(buttons,text="Cancel",command=self._close,bg="#dde3ec",relief="flat",width=14).pack(side="right",padx=(8,0))
-        tk.Button(buttons,text="Save Securely",command=self._save,bg="#1a7a3c",fg="white",relief="flat",font=("Segoe UI",9,"bold"),width=18).pack(side="right")
+            tk.Label(
+                form,
+                text=f"{profile} FedEx Project",
+                bg="white",
+                fg="#1b2735",
+                font=("Segoe UI", 12, "bold"),
+            ).grid(
+                row=row,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                padx=18,
+                pady=(18 if row == 0 else 22, 8),
+            )
+            row += 1
+
+            api_key, existing_secret = load_credentials(profile)
+
+            tk.Label(
+                form,
+                text="API Key:",
+                bg="white",
+                fg="#263342",
+                font=("Segoe UI", 9, "bold"),
+                width=14,
+                anchor="w",
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(18, 8),
+                pady=5,
+            )
+
+            api_var = tk.StringVar(value=api_key)
+            api_entry = tk.Entry(
+                form,
+                textvariable=api_var,
+                font=("Segoe UI", 10),
+                bd=1,
+                relief="solid",
+            )
+            api_entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=(0, 18),
+                pady=5,
+                ipady=7,
+            )
+            row += 1
+
+            tk.Label(
+                form,
+                text="Secret Key:",
+                bg="white",
+                fg="#263342",
+                font=("Segoe UI", 9, "bold"),
+                width=14,
+                anchor="w",
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(18, 8),
+                pady=5,
+            )
+
+            secret_var = tk.StringVar()
+            secret_entry = tk.Entry(
+                form,
+                textvariable=secret_var,
+                show="•",
+                font=("Segoe UI", 10),
+                bd=1,
+                relief="solid",
+            )
+            secret_entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=(0, 18),
+                pady=5,
+                ipady=7,
+            )
+            row += 1
+
+            status = (
+                "Saved securely"
+                if api_key and existing_secret
+                else "Not configured"
+            )
+
+            tk.Label(
+                form,
+                text=f"Status: {status}",
+                bg="white",
+                fg="#1a7a3c" if status == "Saved securely" else "#a02020",
+                font=("Segoe UI", 8, "bold"),
+            ).grid(
+                row=row,
+                column=1,
+                sticky="w",
+                padx=(0, 18),
+                pady=(0, 4),
+            )
+            row += 1
+
+            tk.Label(
+                form,
+                text=(
+                    "Leave Secret Key blank to keep the currently saved "
+                    "secret."
+                    if existing_secret
+                    else "Enter the Secret Key shown in the FedEx portal."
+                ),
+                bg="white",
+                fg="#6a7480",
+                font=("Segoe UI", 8),
+            ).grid(
+                row=row,
+                column=1,
+                sticky="w",
+                padx=(0, 18),
+                pady=(0, 4),
+            )
+            row += 1
+
+            self.entries[profile] = {
+                "api_var": api_var,
+                "secret_var": secret_var,
+                "has_existing_secret": bool(existing_secret),
+            }
+
+        self.bind("<Return>", lambda _event: self._save())
+        self.bind("<Escape>", lambda _event: self._close())
 
     def _save(self):
         try:
