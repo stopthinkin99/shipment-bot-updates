@@ -55,6 +55,9 @@ SYNCED_FILES = [
     "daily_digest.py",
     "email_sender.py",
     "manual_review_dialog.py",
+    "fedex_credentials.py",
+    "fedex_status_updater.py",
+    "fedex_tracking.py"
 ]
 
 
