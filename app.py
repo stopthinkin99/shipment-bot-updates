@@ -32,6 +32,13 @@ run_daily_digest = daily_digest.run_daily_digest
 load_digest_time = daily_digest.load_digest_time
 save_digest_time = daily_digest.save_digest_time
 
+import fedex_status_updater
+importlib.reload(fedex_status_updater)
+FedExStatusScheduler = fedex_status_updater.FedExStatusScheduler
+update_fedex_statuses = fedex_status_updater.update_fedex_statuses
+load_tracking_time = fedex_status_updater.load_tracking_time
+save_tracking_time = fedex_status_updater.save_tracking_time
+
 import json
 import threading
 import tkinter as tk
@@ -40,6 +47,14 @@ import time
 import datetime
 import winreg
 from cleanup import start_cleanup_thread
+
+
+def _show_fedex_credentials(parent):
+    import importlib
+    import fedex_credentials
+    importlib.invalidate_caches()
+    importlib.reload(fedex_credentials)
+    return fedex_credentials.show_credentials_dialog(parent)
 
 
 def _show_manual_review(parent, pdf_path, record):
@@ -306,7 +321,13 @@ class App(tk.Tk):
                        command=self._toggle_autostart,
                        bg=self.C_BG, font=("Segoe UI", 9),
                        activebackground=self.C_BG).grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(6,0))
+            row=3, column=0, columnspan=2, sticky="w", pady=(6,0))
+
+        tk.Button(frm, text="FedEx Credentials…",
+                  command=lambda: _show_fedex_credentials(self),
+                  font=("Segoe UI", 8), relief="flat",
+                  bg="#dde3ec", cursor="hand2").grid(
+            row=3, column=2, sticky="e", pady=(6,0))
 
         # ── daily summary e-mail ────────────────────────────────────
         # Own frame (packs its children) so it never clashes with the
@@ -340,6 +361,34 @@ class App(tk.Tk):
             log=self._log,
         )
         self.digest_sched.start()
+
+        # ── FedEx shipment status ───────────────────────────────────
+        fedex_frm = tk.Frame(self, bg=self.C_BG)
+        fedex_frm.pack(fill="x", padx=16, pady=(0, 6))
+
+        self.fedex_time_var = tk.StringVar(value=load_tracking_time())
+        self.fedex_time_var.trace_add(
+            "write",
+            lambda *a: save_tracking_time(self.fedex_time_var.get())
+        )
+
+        tk.Label(fedex_frm, text="FedEx status time (HH:MM):",
+                 bg=self.C_BG, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(fedex_frm, textvariable=self.fedex_time_var, width=6,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(6, 12))
+
+        tk.Button(fedex_frm, text="Update FedEx status now",
+                  font=("Segoe UI", 8), relief="flat",
+                  bg="#dde3ec", cursor="hand2",
+                  command=self._run_fedex_update_now).pack(side="left")
+
+        self.fedex_sched = FedExStatusScheduler(
+            get_excel_path=lambda: self.var_excel.get().strip(),
+            get_target=lambda: self.fedex_time_var.get(),
+            log=self._log,
+            environment="production",
+        )
+        self.fedex_sched.start()
 
         # ── buttons ─────────────────────────────────────────────────
         btn_frm = tk.Frame(self, bg=self.C_BG)
@@ -433,6 +482,29 @@ class App(tk.Tk):
         return result_holder["record"]
 
     # ---------------------------------------------------------------- #
+    #  FEDEX STATUS
+    # ---------------------------------------------------------------- #
+    def _run_fedex_update_now(self):
+        excel_path = self.var_excel.get().strip()
+        if not excel_path or not os.path.isfile(excel_path):
+            messagebox.showerror(
+                "FedEx status update",
+                "Please choose a valid Excel tracking file first.",
+                parent=self,
+            )
+            return
+
+        self._log("[FEDEX] Manual status update requested.")
+        threading.Thread(
+            target=lambda: update_fedex_statuses(
+                excel_path,
+                environment="production",
+                log=self._log,
+            ),
+            daemon=True,
+        ).start()
+
+    # ---------------------------------------------------------------- #
     #  ACTIONS
     # ---------------------------------------------------------------- #
     def _pick_folder(self):
@@ -500,6 +572,8 @@ class App(tk.Tk):
         self._stop()
         if getattr(self, "digest_sched", None):
             self.digest_sched.stop()
+        if getattr(self, "fedex_sched", None):
+            self.fedex_sched.stop()
         self.destroy()
 
     # ---------------------------------------------------------------- #

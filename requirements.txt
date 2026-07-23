@@ -4,3 +4,4 @@ openpyxl
 certifi
 msal
 requests
+keyring
