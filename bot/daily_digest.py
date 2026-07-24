@@ -68,6 +68,7 @@ SHEET_TO_RECIPIENTS = {
         "hemant.jhaveri@fenixdiamonds.com",
         "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
+        "aayan.boradia@unidesignusa.com",
     ],
     "SOL": [
         "Igor@savransky.com",
