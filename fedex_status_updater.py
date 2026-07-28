@@ -34,14 +34,25 @@ COL_REMARK = 6
 DELIVERED_FILL = PatternFill(fill_type="solid", fgColor="C6EFCE")
 
 FEDEX_RE = re.compile(
+    r"(?:"
     r"\b(?:FEDEX|FED\s*EX|BX\s*FX|FX\s*S/O|FX\s*P/O|"
-    r"STANDARD\s+OVERNIGHT|PRIORITY\s+OVERNIGHT|FIRST\s+OVERNIGHT)\b",
+    r"STANDARD\s+OVERNIGHT|PRIORITY\s+OVERNIGHT|FIRST\s+OVERNIGHT)\b"
+    r"|^\s*M\s*/\s*E\s*$"
+    r")",
     re.I,
 )
 USPS_RE = re.compile(
     r"\b(?:USPS|U\.?S\.?\s*POSTAL|UNITED\s+STATES\s+POSTAL)\b",
     re.I,
 )
+
+MALCA_RE = re.compile(
+    r"\b(?:MALCA\s*[- ]?\s*AMIT|MALKA\s*[- ]?\s*AMIT)\b",
+    re.I,
+)
+MALCA_SHEETS = ("UNI", "EMBY", "FENIX", "SOL")
+MALCA_TRACKING_URL = "https://tracking.malca-amit.com/"
+MALCA_TIMEOUT = 60000
 
 USPS_BATCH_SIZE = 35
 USPS_URL = "https://tools.usps.com/go/TrackConfirmAction"
@@ -172,6 +183,72 @@ def _normalize_status(text):
         "TRACKING NUMBER MAY BE INCORRECT",
     )):
         return "NOT FOUND"
+    return value[:80]
+
+
+def _normalize_malca_status(text):
+    """Normalize the Malca-Amit page result into an Excel-friendly status."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip().upper()
+
+    if not value:
+        return "UNKNOWN"
+
+    if any(phrase in value for phrase in (
+        "HAWB NUMBER NOT FOUND",
+        "SHIPMENT NUMBER NOT FOUND",
+        "REFERENCE NUMBER NOT FOUND",
+        "NO SHIPMENT FOUND",
+    )):
+        return "NOT FOUND"
+
+    if any(phrase in value for phrase in (
+        "DELIVERED",
+        "PROOF OF DELIVERY",
+        "POD RECEIVED",
+    )):
+        return "DELIVERED"
+
+    if any(phrase in value for phrase in (
+        "OUT FOR DELIVERY",
+        "WITH COURIER",
+    )):
+        return "OUT FOR DELIVERY"
+
+    if any(phrase in value for phrase in (
+        "DELIVERY ATTEMPT",
+        "UNABLE TO DELIVER",
+        "CONSIGNEE CLOSED",
+    )):
+        return "DELIVERY ATTEMPTED"
+
+    if any(phrase in value for phrase in (
+        "EXCEPTION",
+        "ON HOLD",
+        "CUSTOMS HOLD",
+        "DELAY",
+        "RETURN TO SENDER",
+        "RETURNED",
+    )):
+        return "EXCEPTION"
+
+    if any(phrase in value for phrase in (
+        "IN TRANSIT",
+        "DEPARTED",
+        "ARRIVED",
+        "RECEIVED AT",
+        "FORWARDED",
+        "TRANSFERRED",
+    )):
+        return "IN TRANSIT"
+
+    if any(phrase in value for phrase in (
+        "PICKED UP",
+        "COLLECTED",
+        "SHIPMENT RECEIVED",
+        "BOOKED",
+    )):
+        return "PICKED UP"
+
     return value[:80]
 
 
@@ -539,6 +616,331 @@ def _update_usps(workbook, today, log):
     }
 
 
+
+def _malca_find_tracking_input(page):
+    """Find the first visible shipment/reference input on the tracking page."""
+    candidates = [
+        page.get_by_label(
+            re.compile(r"shipment|reference|hawb", re.I)
+        ),
+        page.locator(
+            'input[placeholder*="shipment" i], '
+            'input[placeholder*="reference" i], '
+            'input[name*="hawb" i], '
+            'input[id*="hawb" i], '
+            'input[type="text"]'
+        ),
+    ]
+
+    for candidate in candidates:
+        try:
+            count = candidate.count()
+            for index in range(count):
+                item = candidate.nth(index)
+                if item.is_visible():
+                    return item
+        except Exception:
+            continue
+
+    return None
+
+
+def _malca_click_find(page):
+    candidates = [
+        page.get_by_role(
+            "button",
+            name=re.compile(r"^find$|track|search", re.I),
+        ),
+        page.locator(
+            'button:has-text("Find"), '
+            'input[type="submit"], '
+            'button[type="submit"]'
+        ),
+    ]
+
+    for candidate in candidates:
+        try:
+            count = candidate.count()
+            for index in range(count):
+                item = candidate.nth(index)
+                if item.is_visible():
+                    item.click()
+                    return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _malca_page_requires_more_information(body):
+    upper = str(body or "").upper()
+    return (
+        "TO CONTINUE, PLEASE PROVIDE NEXT INFORMATION" in upper
+        or (
+            "ORIGIN COUNTRY" in upper
+            and "ACTIVITY TYPE" in upper
+        )
+    )
+
+
+def _extract_malca_status_from_body(body, tracking_number):
+    """
+    Inspect the rendered result page. Avoid treating page headings and form
+    labels as shipment statuses.
+    """
+    cleaned = re.sub(r"\s+", " ", str(body or "")).strip()
+    upper = cleaned.upper()
+
+    if any(phrase in upper for phrase in (
+        "HAWB NUMBER NOT FOUND",
+        "SHIPMENT NUMBER NOT FOUND",
+        "REFERENCE NUMBER NOT FOUND",
+        "NO SHIPMENT FOUND",
+    )):
+        return "NOT FOUND"
+
+    # Prefer strong status phrases found anywhere in the rendered result.
+    return _normalize_malca_status(cleaned)
+
+
+def _track_malca_number(page, tracking_number, log):
+    page.goto(
+        MALCA_TRACKING_URL,
+        wait_until="domcontentloaded",
+        timeout=MALCA_TIMEOUT,
+    )
+
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except PlaywrightTimeoutError:
+        pass
+
+    tracking_input = _malca_find_tracking_input(page)
+    if tracking_input is None:
+        raise RuntimeError(
+            "Could not find the Malca-Amit tracking-number field."
+        )
+
+    tracking_input.fill(tracking_number)
+
+    if not _malca_click_find(page):
+        tracking_input.press("Enter")
+
+    deadline = time.time() + (MALCA_TIMEOUT / 1000)
+    body = ""
+
+    while time.time() < deadline:
+        try:
+            body = page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body = ""
+
+        upper = body.upper()
+
+        if _malca_page_requires_more_information(body):
+            return {
+                "status": None,
+                "reason": "additional_information_required",
+            }
+
+        if any(phrase in upper for phrase in (
+            "DELIVERED",
+            "OUT FOR DELIVERY",
+            "IN TRANSIT",
+            "PICKED UP",
+            "COLLECTED",
+            "EXCEPTION",
+            "ON HOLD",
+            "DELAY",
+            "HAWB NUMBER NOT FOUND",
+            "SHIPMENT NUMBER NOT FOUND",
+            "REFERENCE NUMBER NOT FOUND",
+            "NO SHIPMENT FOUND",
+        )):
+            status = _extract_malca_status_from_body(
+                body,
+                tracking_number,
+            )
+            return {
+                "status": status,
+                "reason": None,
+            }
+
+        time.sleep(1)
+
+    return {
+        "status": None,
+        "reason": "timeout",
+    }
+
+
+def _update_malca(workbook, today, log):
+    changed = False
+    updated = unchanged = failed = needs_info = 0
+    references = []
+
+    log("[MALCA-AMIT] Starting automated website update.")
+    log(
+        "[MALCA-AMIT] Processing current-month shipments "
+        "one tracking number at a time."
+    )
+
+    for sheet_name in MALCA_SHEETS:
+        ws = _sheet(workbook, sheet_name)
+        if ws is None:
+            log(
+                f"[MALCA-AMIT] {sheet_name}: sheet not found; skipped."
+            )
+            continue
+
+        count = 0
+        for row in range(1, ws.max_row + 1):
+            carrier = str(ws.cell(row, COL_CARRIER).value or "")
+            number = _tracking(ws.cell(row, COL_TRACKING).value)
+            old = str(
+                ws.cell(row, COL_REMARK).value or ""
+            ).strip().upper()
+            shipped = _as_date(ws.cell(row, COL_DATE).value)
+
+            if not MALCA_RE.search(carrier):
+                continue
+            if not number or not _current_month(shipped, today):
+                continue
+            if old == "DELIVERED":
+                _set_status(ws, row, "DELIVERED")
+                changed = True
+                continue
+
+            references.append((ws, sheet_name, row, number, old))
+            count += 1
+
+        log(
+            f"[MALCA-AMIT] {sheet_name}: "
+            f"{count} eligible shipment(s)."
+        )
+
+    if not references:
+        return {
+            "changed": changed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "failed": failed,
+            "needs_info": needs_info,
+        }
+
+    if sync_playwright is None:
+        log(
+            "[MALCA-AMIT] Playwright is not available in this build."
+        )
+        return {
+            "changed": changed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "failed": len(references),
+            "needs_info": needs_info,
+        }
+
+    # Track each unique number once and reuse the result for duplicate rows.
+    unique_numbers = list(
+        dict.fromkeys(item[3] for item in references)
+    )
+    results = {}
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            channel="msedge",
+            headless=True,
+            args=["--disable-dev-shm-usage"],
+        )
+        try:
+            context = browser.new_context(
+                locale="en-US",
+                viewport={"width": 1440, "height": 1000},
+            )
+            page = context.new_page()
+            page.set_default_timeout(30000)
+
+            for index, number in enumerate(unique_numbers, start=1):
+                try:
+                    log(
+                        f"[MALCA-AMIT] Tracking {index}/"
+                        f"{len(unique_numbers)}: {number}"
+                    )
+                    result = _track_malca_number(
+                        page,
+                        number,
+                        log,
+                    )
+                    results[number] = result
+
+                    if result.get("status"):
+                        log(
+                            f"[MALCA-AMIT] {number} -> "
+                            f"{result['status']}"
+                        )
+                    elif (
+                        result.get("reason")
+                        == "additional_information_required"
+                    ):
+                        log(
+                            f"[MALCA-AMIT] {number}: website requires "
+                            "origin country/activity type; row left unchanged."
+                        )
+                    else:
+                        log(
+                            f"[MALCA-AMIT] {number}: no usable status "
+                            "was returned."
+                        )
+                except Exception as exc:
+                    results[number] = {
+                        "status": None,
+                        "reason": "error",
+                    }
+                    log(
+                        f"[MALCA-AMIT] {number} failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            browser.close()
+
+    for ws, sheet_name, row, number, old in references:
+        result = results.get(number) or {}
+        status = result.get("status")
+        reason = result.get("reason")
+
+        if reason == "additional_information_required":
+            needs_info += 1
+            continue
+
+        if not status or status == "UNKNOWN":
+            failed += 1
+            log(
+                f"[MALCA-AMIT] {sheet_name} row {row}: "
+                f"no usable status for {number}."
+            )
+            continue
+
+        if status == old:
+            unchanged += 1
+            continue
+
+        _set_status(ws, row, status)
+        changed = True
+        updated += 1
+        log(
+            f"[MALCA-AMIT] {sheet_name} row {row}: "
+            f"{number} -> {status}"
+        )
+
+    return {
+        "changed": changed,
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+        "needs_info": needs_info,
+    }
+
+
 def update_fedex_statuses(
     excel_path,
     *,
@@ -562,7 +964,7 @@ def update_fedex_statuses(
             "message": message,
         }
 
-    log("[TRACKING] Starting combined FedEx + USPS update.")
+    log("[TRACKING] Starting combined FedEx + USPS + Malca-Amit update.")
     log(f"[TRACKING] Current month: {today.strftime('%B %Y')}")
     log("[TRACKING] Writing statuses to Remark column F.")
 
@@ -579,22 +981,33 @@ def update_fedex_statuses(
             today,
             log,
         )
+        malca = _update_malca(
+            workbook,
+            today,
+            log,
+        )
 
-        if fedex["changed"] or usps["changed"]:
+        if (
+            fedex["changed"]
+            or usps["changed"]
+            or malca["changed"]
+        ):
             workbook.save(excel_path)
             log("[TRACKING] Workbook saved successfully.")
         else:
             log("[TRACKING] No workbook changes were required.")
 
-        updated = fedex["updated"] + usps["updated"]
-        unchanged = fedex["unchanged"] + usps["unchanged"]
-        failed = fedex["failed"] + usps["failed"]
+        updated = fedex["updated"] + usps["updated"] + malca["updated"]
+        unchanged = fedex["unchanged"] + usps["unchanged"] + malca["unchanged"]
+        failed = fedex["failed"] + usps["failed"] + malca["failed"]
 
         message = (
             f"[TRACKING] Finished: updated={updated}, "
             f"unchanged={unchanged}, failed={failed}. "
             f"FedEx updated={fedex['updated']}; "
-            f"USPS updated={usps['updated']}."
+            f"USPS updated={usps['updated']}; "
+            f"Malca-Amit updated={malca['updated']}; "
+            f"Malca-Amit needs-info={malca['needs_info']}."
         )
         log(message)
 
@@ -604,6 +1017,7 @@ def update_fedex_statuses(
             "failed": failed,
             "fedex": fedex,
             "usps": usps,
+            "malca": malca,
             "message": message,
         }
     finally:
@@ -614,7 +1028,7 @@ update_all_tracking_statuses = update_fedex_statuses
 
 
 class FedExStatusScheduler(threading.Thread):
-    """Existing name retained; scheduled runs now update FedEx and USPS."""
+    """Existing name retained; scheduled runs now update FedEx, USPS, and Malca-Amit."""
 
     def __init__(
         self,
@@ -638,7 +1052,7 @@ class FedExStatusScheduler(threading.Thread):
         self._stop_event.set()
 
     def run(self):
-        self.log("FedEx + USPS status scheduler started.")
+        self.log("FedEx + USPS + Malca-Amit status scheduler started.")
 
         while not self._stop_event.is_set():
             now = datetime.now()
@@ -671,4 +1085,4 @@ class FedExStatusScheduler(threading.Thread):
 
             self._stop_event.wait(self.poll_seconds)
 
-        self.log("FedEx + USPS status scheduler stopped.")
+        self.log("FedEx + USPS + Malca-Amit status scheduler stopped.")
