@@ -59,6 +59,7 @@ UPS_SHEETS = ("UNI", "EMBY", "FENIX", "SOL")
 UPS_TRACKING_URL = "https://www.ups.com/track"
 UPS_TIMEOUT = 60000
 UPS_HUMAN_VERIFICATION_TIMEOUT = 600000
+UPS_BATCH_SIZE = 25
 
 USPS_BATCH_SIZE = 35
 USPS_URL = "https://tools.usps.com/go/TrackConfirmAction"
@@ -992,12 +993,12 @@ def _update_malca(workbook, today, log):
 
 
 
-def _ups_tracking_url(tracking_number):
+def _ups_tracking_url(numbers):
     return (
         f"{UPS_TRACKING_URL}?"
         + urlencode({
             "loc": "en_US",
-            "tracknum": tracking_number,
+            "tracknum": ",".join(numbers),
             "requester": "ST",
         })
     )
@@ -1015,33 +1016,31 @@ def _ups_challenge_present(body):
     ))
 
 
-def _ups_result_present(body, tracking_number):
+def _ups_result_phrases_present(body):
     upper = str(body or "").upper()
-    return (
-        tracking_number.upper() in upper
-        and any(x in upper for x in (
-            "DELIVERED",
-            "OUT FOR DELIVERY",
-            "ON THE WAY",
-            "IN TRANSIT",
-            "LABEL CREATED",
-            "WE HAVE YOUR PACKAGE",
-            "PICKED UP",
-            "EXCEPTION",
-            "DELAY",
-            "DELIVERY ATTEMPT",
-            "READY FOR CUSTOMER PICKUP",
-            "TRACKING INFORMATION IS NOT YET AVAILABLE",
-            "WE COULD NOT LOCATE THE SHIPMENT DETAILS",
-            "INVALID TRACKING NUMBER",
-        ))
-    )
+    return any(x in upper for x in (
+        "DELIVERED",
+        "OUT FOR DELIVERY",
+        "ON THE WAY",
+        "IN TRANSIT",
+        "LABEL CREATED",
+        "WE HAVE YOUR PACKAGE",
+        "PICKED UP",
+        "EXCEPTION",
+        "DELAY",
+        "DELIVERY ATTEMPT",
+        "READY FOR CUSTOMER PICKUP",
+        "TRACKING INFORMATION IS NOT YET AVAILABLE",
+        "WE COULD NOT LOCATE THE SHIPMENT DETAILS",
+        "INVALID TRACKING NUMBER",
+    ))
 
 
-def _ups_wait_for_result(page, tracking_number, log, allow_human):
-    deadline = time.time() + (UPS_TIMEOUT / 1000)
+def _ups_wait_for_batch(page, numbers, log):
+    normal_deadline = time.time() + (UPS_TIMEOUT / 1000)
     human_deadline = None
     human_announced = False
+    body = ""
 
     while True:
         try:
@@ -1049,17 +1048,18 @@ def _ups_wait_for_result(page, tracking_number, log, allow_human):
         except Exception:
             body = ""
 
-        if _ups_result_present(body, tracking_number):
+        upper = body.upper()
+        numbers_present = any(number.upper() in upper for number in numbers)
+
+        if numbers_present and _ups_result_phrases_present(body):
             if human_announced:
                 log(
                     "[UPS] Human verification completed. "
-                    "Tracking result detected."
+                    "Tracking results detected; continuing automatically."
                 )
             return body
 
         if _ups_challenge_present(body):
-            if not allow_human:
-                return None
             if not human_announced:
                 human_announced = True
                 human_deadline = (
@@ -1072,89 +1072,151 @@ def _ups_wait_for_result(page, tracking_number, log, allow_human):
                 )
                 log(
                     "[UPS] Complete it manually and leave Edge open. "
-                    "Processing will continue automatically."
+                    "The program will continue automatically."
                 )
+
             if time.time() >= human_deadline:
                 raise RuntimeError(
                     "UPS human verification was not completed "
                     "within 10 minutes."
                 )
-        elif not human_announced and time.time() >= deadline:
-            return None
+        elif not human_announced and time.time() >= normal_deadline:
+            raise RuntimeError(
+                "UPS tracking results did not load within 60 seconds."
+            )
 
         time.sleep(1)
 
 
-def _track_ups_number(playwright, tracking_number, log, visible):
+def _ups_extract_results(page, body, numbers):
+    results = {}
+
+    for number in numbers:
+        candidate = ""
+
+        # First try to locate a DOM element containing this number and
+        # inspect its nearest result card/container.
+        try:
+            locator = page.get_by_text(number, exact=False).first
+            if locator.count():
+                candidate = locator.evaluate(
+                    """el => {
+                        let node = el;
+                        for (let i = 0; i < 10 && node; i++, node = node.parentElement) {
+                            const t = (node.innerText || "").trim();
+                            if (
+                                t.length >= 20 &&
+                                t.length <= 3000 &&
+                                /Delivered|Out for Delivery|On the Way|In Transit|Label Created|We Have Your Package|Picked Up|Exception|Delay|Delivery Attempt|Ready for Customer Pickup|Tracking Information Is Not Yet Available|Invalid Tracking Number/i.test(t)
+                            ) {
+                                return t;
+                            }
+                        }
+                        return (el.parentElement && el.parentElement.innerText) || el.innerText || "";
+                    }"""
+                )
+        except Exception:
+            candidate = ""
+
+        # Fallback: inspect a text window around the tracking number.
+        if not candidate:
+            index = body.upper().find(number.upper())
+            if index >= 0:
+                candidate = body[
+                    max(0, index - 250):
+                    min(len(body), index + 2200)
+                ]
+
+        results[number] = _normalize_ups_status(candidate)
+
+    return results
+
+
+def _track_ups_batch(playwright, numbers, log):
     browser = playwright.chromium.launch(
         channel="msedge",
-        headless=not visible,
-        args=(
-            ["--disable-dev-shm-usage", "--start-maximized"]
-            if visible
-            else ["--disable-dev-shm-usage"]
-        ),
+        headless=False,
+        args=[
+            "--disable-dev-shm-usage",
+            "--start-maximized",
+        ],
     )
+
     try:
         context = browser.new_context(
             locale="en-US",
-            viewport=None if visible else {
-                "width": 1440,
-                "height": 1000,
-            },
+            viewport=None,
         )
         page = context.new_page()
         page.set_default_timeout(30000)
 
-        mode = "visible assisted" if visible else "automatic"
         log(
-            f"[UPS] Opening {mode} lookup for "
-            f"{tracking_number}."
+            f"[UPS] Opening visible UPS tracking window for "
+            f"{len(numbers)} number(s)."
+        )
+        log(
+            "[UPS] Tracking numbers are being submitted automatically."
         )
 
         page.goto(
-            _ups_tracking_url(tracking_number),
+            _ups_tracking_url(numbers),
             wait_until="domcontentloaded",
             timeout=UPS_TIMEOUT,
         )
+
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
         except PlaywrightTimeoutError:
             pass
 
-        body = _ups_wait_for_result(
-            page,
-            tracking_number,
-            log,
-            visible,
+        log(
+            "[UPS] Waiting for UPS results or human verification..."
         )
-        if not body:
-            return {"status": None}
 
-        return {
-            "status": _normalize_ups_status(body),
-        }
+        body = _ups_wait_for_batch(
+            page,
+            numbers,
+            log,
+        )
+
+        results = _ups_extract_results(
+            page,
+            body,
+            numbers,
+        )
+
+        usable = sum(
+            1 for status in results.values()
+            if status not in ("UNKNOWN", "")
+        )
+        log(
+            f"[UPS] UPS page returned {usable} usable status(es)."
+        )
+
+        return results
     finally:
         browser.close()
 
 
 def _update_ups(workbook, today, log):
     changed = False
-    updated = unchanged = failed = assisted = 0
+    updated = unchanged = failed = 0
     references = []
 
-    log("[UPS] Starting UPS website update.")
+    log("[UPS] Starting visible assisted UPS website update.")
     log(
-        "[UPS] Automatic lookup is attempted first; "
-        "visible assisted mode opens only if required."
+        "[UPS] Processing current-month shipments "
+        "in batches of up to 25."
     )
 
     for sheet_name in UPS_SHEETS:
         ws = _sheet(workbook, sheet_name)
         if ws is None:
+            log(f"[UPS] {sheet_name}: sheet not found; skipped.")
             continue
 
         count = 0
+
         for row in range(1, ws.max_row + 1):
             carrier = str(ws.cell(row, COL_CARRIER).value or "")
             number = _tracking(ws.cell(row, COL_TRACKING).value)
@@ -1165,10 +1227,14 @@ def _update_ups(workbook, today, log):
 
             if not UPS_RE.search(carrier):
                 continue
-            if re.fullmatch(r"\\s*M\\s*/\\s*E\\s*", carrier, re.I):
+
+            # M/E is handled through the FedEx API.
+            if re.fullmatch(r"\s*M\s*/\s*E\s*", carrier, re.I):
                 continue
+
             if not number or not _current_month(shipped, today):
                 continue
+
             if old == "DELIVERED":
                 _set_status(ws, row, "DELIVERED")
                 changed = True
@@ -1185,57 +1251,50 @@ def _update_ups(workbook, today, log):
             "updated": updated,
             "unchanged": unchanged,
             "failed": failed,
-            "assisted": assisted,
+            "assisted": 0,
         }
 
     if sync_playwright is None:
+        log("[UPS] Playwright is not available in this build.")
         return {
             "changed": changed,
             "updated": updated,
             "unchanged": unchanged,
             "failed": len(references),
-            "assisted": assisted,
+            "assisted": 0,
         }
 
-    unique_numbers = list(dict.fromkeys(x[3] for x in references))
-    results = {}
+    unique_numbers = list(dict.fromkeys(item[3] for item in references))
+    result_map = {}
+    batch_count = 0
 
     with sync_playwright() as playwright:
-        for index, number in enumerate(unique_numbers, 1):
-            log(
-                f"[UPS] Tracking {index}/{len(unique_numbers)}: "
-                f"{number}"
-            )
+        for batch_number, batch in enumerate(
+            _batches(unique_numbers, UPS_BATCH_SIZE),
+            start=1,
+        ):
+            batch_count += 1
             try:
-                result = _track_ups_number(
-                    playwright,
-                    number,
-                    log,
-                    False,
-                )
-                if not result.get("status"):
-                    assisted += 1
-                    log(
-                        f"[UPS] Automatic lookup did not return a "
-                        f"usable result for {number}. "
-                        "Opening visible assisted mode."
-                    )
-                    result = _track_ups_number(
-                        playwright,
-                        number,
-                        log,
-                        True,
-                    )
-                results[number] = result
-            except Exception as exc:
-                results[number] = {"status": None}
                 log(
-                    f"[UPS] {number} failed: "
+                    f"[UPS] Batch {batch_number}: "
+                    f"{len(batch)} tracking number(s)."
+                )
+                result_map.update(
+                    _track_ups_batch(
+                        playwright,
+                        batch,
+                        log,
+                    )
+                )
+            except Exception as exc:
+                log(
+                    f"[UPS] Batch {batch_number} failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
 
     for ws, sheet_name, row, number, old in references:
-        status = (results.get(number) or {}).get("status")
+        status = result_map.get(number)
+
         if not status or status == "UNKNOWN":
             failed += 1
             log(
@@ -1243,6 +1302,7 @@ def _update_ups(workbook, today, log):
                 f"no usable status for {number}."
             )
             continue
+
         if status == old:
             unchanged += 1
             continue
@@ -1250,6 +1310,7 @@ def _update_ups(workbook, today, log):
         _set_status(ws, row, status)
         changed = True
         updated += 1
+
         log(
             f"[UPS] {sheet_name} row {row}: "
             f"{number} -> {status}"
@@ -1260,7 +1321,7 @@ def _update_ups(workbook, today, log):
         "updated": updated,
         "unchanged": unchanged,
         "failed": failed,
-        "assisted": assisted,
+        "assisted": batch_count,
     }
 
 
@@ -1336,7 +1397,7 @@ def update_fedex_statuses(
             f"FedEx updated={fedex['updated']}; "
             f"USPS updated={usps['updated']}; "
             f"UPS updated={ups['updated']}; "
-            f"UPS assisted={ups['assisted']}; "
+            f"UPS browser batches={ups['assisted']}; "
             f"Malca-Amit updated={malca['updated']}; "
             f"Malca-Amit needs-info={malca['needs_info']}."
         )
