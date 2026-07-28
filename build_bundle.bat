@@ -31,12 +31,20 @@ curl -L -o %BUNDLE%\python\get-pip.py %PIP_URL%
 del %BUNDLE%\python\get-pip.py
 
 echo [4/6] Installing packages into bundle\python...
+
 %BUNDLE%\python\python.exe -m pip install ^
     watchdog openpyxl pdf2image Pillow numpy ^
     pytesseract pywin32 certifi msal requests ^
-    keyring truststore playwright ^
+    keyring truststore playwright pyee greenlet ^
     --target %BUNDLE%\python\Lib\site-packages ^
     --no-warn-script-location -q
+
+if errorlevel 1 (
+    echo ERROR: Package installation failed.
+    pause
+    exit /b 1
+)
+
 echo     Packages installed.
 
 echo [5/6] Copying Tesseract and Poppler...
@@ -82,16 +90,71 @@ REM Write default empty config
 echo {}> %BUNDLE%\config.json
 
 echo.
+echo [PyInstaller] Installing build dependencies...
+
+py -m pip install --upgrade pip
+py -m pip install ^
+    pyinstaller ^
+    playwright ^
+    pyee ^
+    greenlet ^
+    keyring ^
+    truststore ^
+    requests ^
+    openpyxl
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: Build dependencies could not be installed.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [PyInstaller] Verifying Playwright...
+
+py -c "from playwright.sync_api import sync_playwright; print('Playwright import successful')"
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: Playwright is not available in the Python used for building.
+    pause
+    exit /b 1
+)
+
+echo.
 echo [PyInstaller] Building ShipmentBot.exe...
-py -m pip install pyinstaller -q
+
 py -m PyInstaller ^
     --name ShipmentBot ^
     --onefile ^
     --windowed ^
+    --clean ^
+    --noconfirm ^
     --distpath %BUNDLE% ^
     --workpath build_tmp ^
     --specpath build_tmp ^
+    --hidden-import=playwright ^
+    --hidden-import=playwright.sync_api ^
+    --hidden-import=playwright._impl ^
+    --hidden-import=pyee ^
+    --hidden-import=greenlet ^
+    --collect-all playwright ^
+    --collect-all pyee ^
+    --collect-all greenlet ^
+    --hidden-import=keyring ^
+    --collect-all keyring ^
+    --hidden-import=truststore ^
+    --collect-all truststore ^
     app.py
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: ShipmentBot.exe build failed.
+    pause
+    exit /b 1
+)
+
 rmdir /s /q build_tmp 2>nul
 del /q ShipmentBot.spec 2>nul
 
