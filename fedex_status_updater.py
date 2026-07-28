@@ -294,7 +294,7 @@ def _extract_usps_results(page, numbers):
                 const text = document.body ? document.body.innerText : "";
                 return nums.some(n => text.includes(n));
             }""",
-            numbers,
+            arg=numbers,
             timeout=USPS_TIMEOUT,
         )
     except PlaywrightTimeoutError:
@@ -432,7 +432,6 @@ def _update_usps(workbook, today, log):
             )
             results.update(_track_usps_batch(batch, log))
         except Exception as exc:
-            failed += len(batch)
             log(
                 f"[USPS] Batch {batch_no} failed: "
                 f"{type(exc).__name__}: {exc}"
