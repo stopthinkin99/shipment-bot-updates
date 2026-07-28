@@ -46,6 +46,7 @@ USPS_RE = re.compile(
 USPS_BATCH_SIZE = 35
 USPS_URL = "https://tools.usps.com/go/TrackConfirmAction"
 USPS_TIMEOUT = 90000
+USPS_HUMAN_VERIFICATION_TIMEOUT = 600000  # 10 minutes
 
 
 def _settings_path():
@@ -287,61 +288,92 @@ def _usps_url(numbers):
     return f"{USPS_URL}?{query}"
 
 
-def _extract_usps_results(page, numbers):
+def _extract_usps_results(page, numbers, log):
     """
-    Wait for USPS results without using Page.wait_for_function().
+    Assisted USPS mode.
 
-    Some packaged Playwright installations can contain mismatched wrapper
-    and implementation versions. A normal Python polling loop avoids that
-    compatibility problem while still waiting for the dynamically rendered
-    USPS results.
+    The browser remains visible. If USPS displays a human-verification
+    challenge, the employee completes it in Edge. The program then
+    automatically continues when tracking results appear.
     """
-    deadline = time.time() + (USPS_TIMEOUT / 1000)
+    normal_deadline = time.time() + (USPS_TIMEOUT / 1000)
+    verification_deadline = None
+    verification_announced = False
     body = ""
 
-    while time.time() < deadline:
+    result_phrases = (
+        "DELIVERED",
+        "OUT FOR DELIVERY",
+        "IN TRANSIT",
+        "MOVING THROUGH NETWORK",
+        "PRE-SHIPMENT",
+        "LABEL CREATED",
+        "USPS IN POSSESSION",
+        "ACCEPTED",
+        "STATUS NOT AVAILABLE",
+        "NOT TRACKABLE",
+    )
+    challenge_phrases = (
+        "VERIFY YOU ARE HUMAN",
+        "CAPTCHA",
+        "HUMAN VERIFICATION",
+        "SECURITY CHECK",
+        "PRESS AND HOLD",
+        "ACCESS DENIED",
+    )
+
+    while True:
         try:
             body = page.locator("body").inner_text(timeout=5000)
         except Exception:
             body = ""
 
         upper_body = body.upper()
+        challenge_present = any(
+            phrase in upper_body for phrase in challenge_phrases
+        )
+        results_present = (
+            any(number in body for number in numbers)
+            and any(phrase in upper_body for phrase in result_phrases)
+        )
 
-        if any(number in body for number in numbers):
+        if results_present:
+            if verification_announced:
+                log(
+                    "[USPS] Human verification completed. "
+                    "Tracking results detected; continuing automatically."
+                )
             break
 
-        if any(
-            phrase in upper_body
-            for phrase in (
-                "DELIVERED",
-                "OUT FOR DELIVERY",
-                "IN TRANSIT",
-                "MOVING THROUGH NETWORK",
-                "PRE-SHIPMENT",
-                "LABEL CREATED",
-                "USPS IN POSSESSION",
-                "STATUS NOT AVAILABLE",
-                "NOT TRACKABLE",
-                "VERIFY YOU ARE HUMAN",
-                "CAPTCHA",
-                "ACCESS DENIED",
-            )
-        ):
-            break
+        if challenge_present:
+            if not verification_announced:
+                verification_announced = True
+                verification_deadline = (
+                    time.time()
+                    + (USPS_HUMAN_VERIFICATION_TIMEOUT / 1000)
+                )
+                log(
+                    "[USPS] Human verification is required in the "
+                    "open Microsoft Edge window."
+                )
+                log(
+                    "[USPS] Complete the verification manually. "
+                    "Do not close Edge; the program will continue "
+                    "automatically afterward."
+                )
+
+            if time.time() >= verification_deadline:
+                raise RuntimeError(
+                    "USPS human verification was not completed "
+                    "within 10 minutes."
+                )
+        else:
+            if not verification_announced and time.time() >= normal_deadline:
+                raise RuntimeError(
+                    "USPS tracking results did not load within 90 seconds."
+                )
 
         time.sleep(1)
-
-    if not body:
-        body = page.locator("body").inner_text(timeout=30000)
-
-    upper = body.upper()
-
-    if any(x in upper for x in (
-        "VERIFY YOU ARE HUMAN", "CAPTCHA", "ACCESS DENIED",
-    )):
-        raise RuntimeError(
-            "USPS displayed human verification or access denied."
-        )
 
     results = {}
     for number in numbers:
@@ -384,23 +416,27 @@ def _track_usps_batch(numbers, log):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             channel="msedge",
-            headless=True,
+            headless=False,
             args=[
-                "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
+                "--start-maximized",
             ],
         )
         try:
             context = browser.new_context(
                 locale="en-US",
-                viewport={"width": 1440, "height": 1000},
+                viewport=None,
             )
             page = context.new_page()
             page.set_default_timeout(30000)
 
             log(
-                f"[USPS] Opening USPS tracking for "
+                f"[USPS] Opening visible USPS tracking window for "
                 f"{len(numbers)} number(s)."
+            )
+            log(
+                "[USPS] Tracking numbers are being submitted "
+                "automatically."
             )
             page.goto(
                 _usps_url(numbers),
@@ -412,8 +448,8 @@ def _track_usps_batch(numbers, log):
             except PlaywrightTimeoutError:
                 pass
 
-            log("[USPS] Waiting for USPS result cards...")
-            results = _extract_usps_results(page, numbers)
+            log("[USPS] Waiting for USPS results or human verification...")
+            results = _extract_usps_results(page, numbers, log)
             log(
                 f"[USPS] USPS page returned "
                 f"{sum(1 for value in results.values() if value != 'UNKNOWN')} "
