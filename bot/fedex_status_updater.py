@@ -151,50 +151,169 @@ def _sheet(workbook, expected):
 
 
 def _normalize_status(text):
+    """
+    Normalize FedEx API status text into stable Excel values.
+
+    FedEx may return short labels, detailed localized descriptions, or
+    event-code-derived wording. More specific phrases are checked before
+    broader ones so, for example, "Ready for Pickup" is not treated as
+    "Picked Up".
+    """
     value = re.sub(r"\s+", " ", str(text or "")).strip().upper()
+
     if not value:
         return "UNKNOWN"
-    if "DELIVERED" in value:
+
+    # Final delivery
+    if any(phrase in value for phrase in (
+        "DELIVERED",
+        "DELIVERY COMPLETED",
+        "PROOF OF DELIVERY",
+    )):
         return "DELIVERED"
-    if "OUT FOR DELIVERY" in value:
+
+    # Final-mile delivery
+    if any(phrase in value for phrase in (
+        "OUT FOR DELIVERY",
+        "ON FEDEX VEHICLE FOR DELIVERY",
+        "VEHICLE DISPATCHED",
+        "ENROUTE TO DELIVERY",
+    )):
         return "OUT FOR DELIVERY"
-    if any(x in value for x in (
-        "DELIVERY ATTEMPT", "NOTICE LEFT", "NO ACCESS",
-        "RECEPTACLE BLOCKED",
+
+    # Pickup / hold options
+    if any(phrase in value for phrase in (
+        "READY FOR PICKUP",
+        "READY FOR RECIPIENT PICKUP",
+        "HOLD AT LOCATION REQUEST ACCEPTED",
+        "AVAILABLE FOR PICKUP",
+        "AT FEDEX LOCATION",
+    )):
+        return "AVAILABLE FOR PICKUP"
+
+    # Delivery attempt
+    if any(phrase in value for phrase in (
+        "DELIVERY ATTEMPT",
+        "DELIVERY EXCEPTION - CUSTOMER NOT AVAILABLE",
+        "CUSTOMER NOT AVAILABLE",
+        "RECIPIENT NOT AVAILABLE",
+        "BUSINESS CLOSED",
+        "NO ONE AVAILABLE",
     )):
         return "DELIVERY ATTEMPTED"
-    if any(x in value for x in (
-        "ALERT", "EXCEPTION", "RETURN TO SENDER",
-        "HELD AT POST OFFICE", "UNCLAIMED",
-        "INSUFFICIENT ADDRESS",
+
+    # Customs / regulatory
+    if any(phrase in value for phrase in (
+        "CLEARANCE DELAY",
+        "CUSTOMS DELAY",
+        "CLEARANCE EXCEPTION",
+        "REGULATORY AGENCY CLEARANCE DELAY",
+    )):
+        return "CUSTOMS DELAY"
+
+    if any(phrase in value for phrase in (
+        "CLEARANCE IN PROGRESS",
+        "CUSTOMS CLEARANCE IN PROGRESS",
+        "INTERNATIONAL SHIPMENT RELEASE",
+        "CLEARED CUSTOMS",
+        "EXPORT APPROVED",
+    )):
+        return "CUSTOMS PROCESSING"
+
+    # Returns
+    if any(phrase in value for phrase in (
+        "RETURNING PACKAGE TO SHIPPER",
+        "RETURN TO SHIPPER",
+        "RETURN TO SENDER",
+        "RETURN SHIPMENT",
+        "RETURN INITIATED",
+    )):
+        return "RETURN TO SENDER"
+
+    # Exceptions and delays
+    if any(phrase in value for phrase in (
+        "SHIPMENT EXCEPTION",
+        "DELIVERY EXCEPTION",
+        "EXCEPTION",
+        "WEATHER DELAY",
+        "OPERATIONAL DELAY",
+        "DELIVERY DELAY",
+        "DELAYED",
+        "ADDRESS CORRECTED",
+        "ADDRESS CHANGE REQUESTED",
+        "LOCATION CHANGED",
     )):
         return "EXCEPTION"
-    if any(x in value for x in (
-        "IN TRANSIT", "MOVING THROUGH NETWORK",
-        "ARRIVED AT USPS", "DEPARTED USPS",
-        "PROCESSED THROUGH", "ARRIVING LATE",
+
+    # In transit
+    if any(phrase in value for phrase in (
+        "ON THE WAY",
+        "IN TRANSIT",
+        "AT LOCAL FEDEX FACILITY",
+        "AT FEDEX FACILITY",
+        "AT SORT FACILITY",
+        "ARRIVED AT FEDEX LOCATION",
+        "DEPARTED FEDEX LOCATION",
+        "LEFT FEDEX ORIGIN FACILITY",
+        "PLANE IN FLIGHT",
+        "PLANE LANDED",
+        "TRANSFER",
+        "IN PROGRESS",
+        "ARRIVED AT PORT OF ENTRY",
     )):
         return "IN TRANSIT"
-    if any(x in value for x in (
-        "ACCEPTED", "USPS IN POSSESSION",
-        "PICKED UP", "ORIGIN ACCEPTANCE",
+
+    # Possession / pickup
+    if any(phrase in value for phrase in (
+        "PICKED UP",
+        "PICKED UP - SEE DETAILS",
+        "IN FEDEX POSSESSION",
+        "DROPPED OFF",
+        "TENDERED AT FEDEX LOCATION",
+        "FEDEX HAS THE PACKAGE",
     )):
-        return "ACCEPTED"
-    if any(x in value for x in (
-        "LABEL CREATED", "PRE-SHIPMENT",
-        "USPS AWAITING ITEM", "SHIPPING PARTNER",
+        return "PICKED UP"
+
+    # Shipment created but not yet physically received
+    if any(phrase in value for phrase in (
+        "SHIPMENT INFORMATION SENT TO FEDEX",
+        "LABEL CREATED",
+        "SHIPMENT CREATED",
+        "ORDER CREATED",
+        "FEDEX AWAITING PACKAGE",
+        "PACKAGE DATA TRANSMITTED TO FEDEX",
     )):
         return "LABEL CREATED"
-    if any(x in value for x in (
-        "STATUS NOT AVAILABLE", "NOT TRACKABLE",
-        "TRACKING NUMBER MAY BE INCORRECT",
+
+    # Cancelled / invalid
+    if any(phrase in value for phrase in (
+        "SHIPMENT CANCELLED",
+        "SHIPMENT CANCELED",
+        "CANCELLED",
+        "CANCELED",
+    )):
+        return "CANCELLED"
+
+    if any(phrase in value for phrase in (
+        "TRACKING NUMBER NOT FOUND",
+        "NO RECORD OF THIS TRACKING NUMBER",
+        "INVALID TRACKING NUMBER",
+        "NOT FOUND",
     )):
         return "NOT FOUND"
+
+    # Preserve an unfamiliar current FedEx description rather than mapping
+    # it incorrectly. Excel receives a concise value for review.
     return value[:80]
 
-
 def _normalize_malca_status(text):
-    """Normalize the Malca-Amit page result into an Excel-friendly status."""
+    """
+    Normalize Malca-Amit result text.
+
+    Malca-Amit does not publish a complete public status-code dictionary.
+    The parser therefore recognizes broad secure-logistics wording and
+    preserves unfamiliar concise statuses rather than guessing.
+    """
     value = re.sub(r"\s+", " ", str(text or "")).strip().upper()
 
     if not value:
@@ -205,19 +324,26 @@ def _normalize_malca_status(text):
         "SHIPMENT NUMBER NOT FOUND",
         "REFERENCE NUMBER NOT FOUND",
         "NO SHIPMENT FOUND",
+        "NO RECORD FOUND",
     )):
         return "NOT FOUND"
 
     if any(phrase in value for phrase in (
         "DELIVERED",
+        "DELIVERY COMPLETED",
         "PROOF OF DELIVERY",
         "POD RECEIVED",
+        "SIGNED FOR",
+        "CONSIGNEE RECEIVED",
     )):
         return "DELIVERED"
 
     if any(phrase in value for phrase in (
         "OUT FOR DELIVERY",
         "WITH COURIER",
+        "COURIER OUT FOR DELIVERY",
+        "DISPATCHED FOR DELIVERY",
+        "EN ROUTE FOR DELIVERY",
     )):
         return "OUT FOR DELIVERY"
 
@@ -225,16 +351,47 @@ def _normalize_malca_status(text):
         "DELIVERY ATTEMPT",
         "UNABLE TO DELIVER",
         "CONSIGNEE CLOSED",
+        "CONSIGNEE UNAVAILABLE",
+        "NO ANSWER",
+        "DELIVERY FAILED",
     )):
         return "DELIVERY ATTEMPTED"
 
     if any(phrase in value for phrase in (
+        "AVAILABLE FOR COLLECTION",
+        "AVAILABLE FOR PICKUP",
+        "READY FOR COLLECTION",
+        "READY FOR PICKUP",
+        "HELD FOR COLLECTION",
+    )):
+        return "AVAILABLE FOR PICKUP"
+
+    if any(phrase in value for phrase in (
+        "CUSTOMS HOLD",
+        "CUSTOMS DELAY",
+        "AWAITING CUSTOMS CLEARANCE",
+        "CLEARANCE IN PROGRESS",
+        "UNDER CUSTOMS CLEARANCE",
+    )):
+        return "CUSTOMS PROCESSING"
+
+    if any(phrase in value for phrase in (
+        "RETURN TO SHIPPER",
+        "RETURN TO SENDER",
+        "RETURNED TO ORIGIN",
+        "RETURNED",
+    )):
+        return "RETURN TO SENDER"
+
+    if any(phrase in value for phrase in (
         "EXCEPTION",
         "ON HOLD",
-        "CUSTOMS HOLD",
+        "SECURITY HOLD",
         "DELAY",
-        "RETURN TO SENDER",
-        "RETURNED",
+        "DELAYED",
+        "ADDRESS ISSUE",
+        "DOCUMENTATION REQUIRED",
+        "AWAITING INSTRUCTIONS",
     )):
         return "EXCEPTION"
 
@@ -245,6 +402,10 @@ def _normalize_malca_status(text):
         "RECEIVED AT",
         "FORWARDED",
         "TRANSFERRED",
+        "AT HUB",
+        "AT BRANCH",
+        "EN ROUTE",
+        "IN PROCESS",
     )):
         return "IN TRANSIT"
 
@@ -252,56 +413,169 @@ def _normalize_malca_status(text):
         "PICKED UP",
         "COLLECTED",
         "SHIPMENT RECEIVED",
+        "RECEIVED FROM SHIPPER",
         "BOOKED",
+        "ACCEPTED",
     )):
         return "PICKED UP"
 
+    if any(phrase in value for phrase in (
+        "SHIPMENT CREATED",
+        "BOOKING CREATED",
+        "AWAITING COLLECTION",
+        "AWAITING PICKUP",
+        "INFORMATION RECEIVED",
+    )):
+        return "LABEL CREATED"
+
+    if any(phrase in value for phrase in (
+        "CANCELLED",
+        "CANCELED",
+        "SHIPMENT VOIDED",
+    )):
+        return "CANCELLED"
+
     return value[:80]
 
-
 def _normalize_ups_status(text):
+    """
+    Normalize UPS tracking-page wording.
+
+    UPS officially groups statuses into Label Created, Shipped/On the Way,
+    Out for Delivery, Transferred to Post Office, Delivered, Delivered to
+    a UPS Access Point, and Exception. Common detailed page wording is also
+    covered below.
+    """
     value = re.sub(r"\s+", " ", str(text or "")).strip().upper()
+
     if not value:
         return "UNKNOWN"
-    if any(x in value for x in (
+
+    if any(phrase in value for phrase in (
         "TRACKING INFORMATION IS NOT YET AVAILABLE",
         "WE COULD NOT LOCATE THE SHIPMENT DETAILS",
         "TRACKING NUMBER IS NOT VALID",
         "INVALID TRACKING NUMBER",
+        "DETAILS NOT YET AVAILABLE",
     )):
         return "NOT FOUND"
-    if "DELIVERED" in value:
+
+    # Access Point is not final delivery to the recipient.
+    if any(phrase in value for phrase in (
+        "DELIVERED TO A UPS ACCESS POINT",
+        "DELIVERED TO UPS ACCESS POINT",
+        "READY FOR CUSTOMER PICKUP",
+        "READY FOR PICKUP",
+        "AVAILABLE FOR PICKUP",
+        "HELD FOR PICKUP",
+    )):
+        return "AVAILABLE FOR PICKUP"
+
+    if any(phrase in value for phrase in (
+        "DELIVERED",
+        "DELIVERY COMPLETE",
+        "PROOF OF DELIVERY",
+        "LEFT AT",
+        "RECEIVED BY",
+    )):
         return "DELIVERED"
-    if "OUT FOR DELIVERY" in value:
+
+    if any(phrase in value for phrase in (
+        "OUT FOR DELIVERY",
+        "LOADED ON DELIVERY VEHICLE",
+        "DESTINATION SCAN",
+    )):
         return "OUT FOR DELIVERY"
-    if any(x in value for x in (
-        "DELIVERY ATTEMPT", "WE MISSED YOU",
+
+    if any(phrase in value for phrase in (
+        "TRANSFERRED TO POST OFFICE FOR DELIVERY",
+        "TRANSFERRED TO THE POST OFFICE",
+        "PACKAGE TRANSFERRED TO POST OFFICE",
+        "POST OFFICE ATTEMPTED DELIVERY",
+    )):
+        return "TRANSFERRED TO USPS"
+
+    if any(phrase in value for phrase in (
+        "DELIVERY ATTEMPT",
+        "WE MISSED YOU",
         "RECEIVER WAS NOT AVAILABLE",
+        "RECEIVER UNAVAILABLE",
+        "BUSINESS WAS CLOSED",
+        "CUSTOMER WAS NOT AVAILABLE",
+        "UPS DELIVERY NOTICE",
     )):
         return "DELIVERY ATTEMPTED"
-    if any(x in value for x in (
-        "EXCEPTION", "DELAY", "RETURNING TO SENDER",
-        "RETURN TO SENDER", "HELD",
+
+    if any(phrase in value for phrase in (
+        "RETURNING TO SENDER",
+        "RETURN TO SENDER",
+        "RETURN SERVICE",
+        "RETURNED TO SENDER",
+    )):
+        return "RETURN TO SENDER"
+
+    if any(phrase in value for phrase in (
+        "EXCEPTION",
+        "DELAY",
+        "WEATHER MAY CAUSE A DELAY",
+        "SEVERE WEATHER",
+        "ADDRESS INFORMATION REQUIRED",
+        "ADDRESS NEEDS CORRECTION",
+        "HELD",
+        "DAMAGE REPORTED",
+        "PACKAGE DAMAGED",
+        "CUSTOMS DELAY",
+        "CLEARANCE INFORMATION REQUIRED",
+        "MECHANICAL FAILURE",
+        "EMERGENCY SITUATION",
     )):
         return "EXCEPTION"
-    if any(x in value for x in (
-        "ON THE WAY", "IN TRANSIT", "DEPARTED FROM FACILITY",
-        "ARRIVED AT FACILITY", "PROCESSING AT UPS FACILITY",
+
+    if any(phrase in value for phrase in (
+        "SHIPPED/ON THE WAY",
+        "ON THE WAY",
+        "IN TRANSIT",
+        "DEPARTED FROM FACILITY",
+        "ARRIVED AT FACILITY",
+        "PROCESSING AT UPS FACILITY",
+        "ORIGIN SCAN",
+        "DEPARTURE SCAN",
+        "ARRIVAL SCAN",
+        "IMPORT SCAN",
+        "EXPORT SCAN",
+        "WAREHOUSE SCAN",
+        "YOUR PACKAGE IS ON THE WAY",
     )):
         return "IN TRANSIT"
-    if any(x in value for x in (
-        "LABEL CREATED", "SHIPPER CREATED A LABEL",
-        "UPS DOESN'T HAVE POSSESSION", "UPS DOES NOT HAVE POSSESSION",
-    )):
-        return "LABEL CREATED"
-    if any(x in value for x in (
-        "WE HAVE YOUR PACKAGE", "PICKED UP", "ORIGIN SCAN",
+
+    if any(phrase in value for phrase in (
+        "WE HAVE YOUR PACKAGE",
+        "PICKED UP",
+        "PICKUP SCAN",
+        "DROP-OFF",
+        "UPS HAS POSSESSION",
     )):
         return "PICKED UP"
-    if "READY FOR CUSTOMER PICKUP" in value:
-        return "READY FOR PICKUP"
-    return value[:80]
 
+    if any(phrase in value for phrase in (
+        "LABEL CREATED",
+        "SHIPPER CREATED A LABEL",
+        "UPS DOESN'T HAVE POSSESSION",
+        "UPS DOES NOT HAVE POSSESSION",
+        "SHIPMENT READY FOR UPS",
+        "BILLING INFORMATION RECEIVED",
+        "ORDER PROCESSED: READY FOR UPS",
+    )):
+        return "LABEL CREATED"
+
+    if any(phrase in value for phrase in (
+        "CANCELLED",
+        "CANCELED",
+        "VOIDED",
+    )):
+        return "CANCELLED"
+
+    return value[:80]
 
 def _set_status(ws, row, status):
     cell = ws.cell(row, COL_REMARK)
@@ -389,6 +663,9 @@ def _update_fedex(workbook, environment, today, log):
                 failed += 1
                 continue
             status = _normalize_status(result.get("status"))
+            log(
+                f"[FEDEX] Parsed {number}: {status}"
+            )
             if status == old:
                 unchanged += 1
                 continue
@@ -414,6 +691,179 @@ def _usps_url(numbers):
         "tABt": "false",
     })
     return f"{USPS_URL}?{query}"
+
+
+def _normalize_usps_card_status(card_text, tracking_number):
+    """
+    Read the current status from one USPS result card.
+
+    USPS result cards can include progress-stage labels such as
+    Pre-Shipment, In Transit, Out for Delivery, and Delivered. Those labels
+    must not be mistaken for the current scan. We therefore select the
+    earliest recognized USPS status phrase appearing after the tracking
+    number inside that shipment's bounded card text.
+    """
+    text = re.sub(r"\r", "", str(card_text or ""))
+    upper = text.upper()
+
+    number_index = upper.find(tracking_number.upper())
+    if number_index >= 0:
+        upper = upper[number_index + len(tracking_number):]
+
+    # Restrict parsing to the beginning of this individual shipment card.
+    # This avoids footer content, historical events, and the next card.
+    upper = upper[:1800]
+
+    # Order matters only when phrases begin at the same position.
+    # More specific USPS phrases appear before broader phrases.
+    status_patterns = [
+        # Successfully delivered
+        (r"\bDELIVERED(?:,\s*TO\s+AGENT)?\b", "DELIVERED"),
+        (r"\bDELIVERED TO AGENT FOR FINAL DELIVERY\b", "DELIVERED"),
+        (r"\bDELIVERED TO POSTAL AGENT\b", "DELIVERED"),
+        (r"\bPICKED UP AT POST OFFICE\b", "DELIVERED"),
+        (r"\bPICKED UP BY INDIVIDUAL AT POST OFFICE\b", "DELIVERED"),
+
+        # Delivery today / redelivery
+        (r"\bOUT FOR REDELIVERY\b", "OUT FOR DELIVERY"),
+        (r"\bOUT FOR DELIVERY\b", "OUT FOR DELIVERY"),
+        (r"\bARRIVED AT POST OFFICE\b", "PREPARING FOR DELIVERY"),
+        (r"\bPREPARING FOR DELIVERY\b", "PREPARING FOR DELIVERY"),
+
+        # Pickup / held
+        (r"\bAVAILABLE FOR REDELIVERY OR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bAVAILABLE FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bHELD AT POST OFFICE,\s*AT CUSTOMER REQUEST\b", "AVAILABLE FOR PICKUP"),
+        (r"\bHELD AT POST OFFICE\b", "AVAILABLE FOR PICKUP"),
+        (r"\bREADY FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bPREPARED FOR REDELIVERY\b", "PREPARING FOR REDELIVERY"),
+        (r"\bREDELIVERY SCHEDULED\b", "REDELIVERY SCHEDULED"),
+        (r"\bREMINDER TO SCHEDULE REDELIVERY OF YOUR ITEM\b", "DELIVERY ATTEMPTED"),
+
+        # Attempted / not completed
+        (r"\bNOTICE LEFT \(NO AUTHORIZED RECIPIENT AVAILABLE\)\b", "DELIVERY ATTEMPTED"),
+        (r"\bNOTICE LEFT \(NO SECURE LOCATION AVAILABLE\)\b", "DELIVERY ATTEMPTED"),
+        (r"\bNOTICE LEFT\b", "DELIVERY ATTEMPTED"),
+        (r"\bDELIVERY ATTEMPT(?:ED)?\b", "DELIVERY ATTEMPTED"),
+        (r"\bNO ACCESS TO DELIVERY LOCATION\b", "DELIVERY ATTEMPTED"),
+        (r"\bNO ACCESS\b", "DELIVERY ATTEMPTED"),
+        (r"\bRECEPTACLE BLOCKED\b", "DELIVERY ATTEMPTED"),
+        (r"\bANIMAL INTERFERENCE\b", "DELIVERY ATTEMPTED"),
+        (r"\bBUSINESS CLOSED\b", "DELIVERY ATTEMPTED"),
+        (r"\bDELIVERY STATUS NOT UPDATED\b", "AWAITING DELIVERY SCAN"),
+        (r"\bAWAITING DELIVERY SCAN\b", "AWAITING DELIVERY SCAN"),
+
+        # Moving through USPS network
+        (r"\bIN[- ]TRANSIT,\s*ARRIVING ON TIME\b", "IN TRANSIT"),
+        (r"\bIN[- ]TRANSIT,\s*ARRIVING LATE\b", "IN TRANSIT - DELAYED"),
+        (r"\bMOVING THROUGH NETWORK\b", "IN TRANSIT"),
+        (r"\bON THE WAY\b", "IN TRANSIT"),
+        (r"\bIN TRANSIT TO NEXT FACILITY\b", "IN TRANSIT"),
+        (r"\bIN TRANSIT\b", "IN TRANSIT"),
+        (r"\bARRIVED AT USPS REGIONAL FACILITY\b", "IN TRANSIT"),
+        (r"\bDEPARTED USPS REGIONAL FACILITY\b", "IN TRANSIT"),
+        (r"\bARRIVED AT USPS FACILITY\b", "IN TRANSIT"),
+        (r"\bDEPARTED USPS FACILITY\b", "IN TRANSIT"),
+        (r"\bPROCESSED THROUGH USPS FACILITY\b", "IN TRANSIT"),
+        (r"\bPROCESSED THROUGH FACILITY\b", "IN TRANSIT"),
+        (r"\bARRIVED AT HUB\b", "IN TRANSIT"),
+        (r"\bDEPARTED POST OFFICE\b", "IN TRANSIT"),
+        (r"\bMISSENT\b", "IN TRANSIT - DELAYED"),
+
+        # Forwarding
+        (r"\bFORWARDED PROCESSED\b", "FORWARDED"),
+        (r"\bFORWARDED\b", "FORWARDED"),
+
+        # USPS acceptance / possession
+        (r"\bUSPS IN POSSESSION OF ITEM\b", "ACCEPTED"),
+        (r"\bSHIPMENT RECEIVED,\s*PACKAGE ACCEPTANCE PENDING\b", "ACCEPTANCE PENDING"),
+        (r"\bPACKAGE ACCEPTANCE PENDING\b", "ACCEPTANCE PENDING"),
+        (r"\bACCEPTED AT USPS ORIGIN FACILITY\b", "ACCEPTED"),
+        (r"\bORIGIN ACCEPTANCE\b", "ACCEPTED"),
+        (r"\bACCEPTED\b", "ACCEPTED"),
+
+        # Shipping partner has it, USPS does not yet
+        (r"\bARRIVED SHIPPING PARTNER FACILITY,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
+        (r"\bDEPARTED SHIPPING PARTNER FACILITY,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
+        (r"\bPICKED UP BY SHIPPING PARTNER,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
+        (r"\bON ITS WAY TO USPS\b", "SHIPPING PARTNER"),
+        (r"\bSHIPPING PARTNER\b", "SHIPPING PARTNER"),
+
+        # Label created / USPS has not received it
+        (r"\bPRE-SHIPMENT INFO SENT TO USPS,\s*USPS AWAITING ITEM\b", "LABEL CREATED"),
+        (r"\bSHIPPING LABEL CREATED,\s*USPS AWAITING ITEM\b", "LABEL CREATED"),
+        (r"\bUSPS AWAITING ITEM\b", "LABEL CREATED"),
+        (r"\bPRE-SHIPMENT\b", "LABEL CREATED"),
+        (r"\bLABEL CREATED\b", "LABEL CREATED"),
+
+        # Address / return / alert conditions
+        (r"\bINSUFFICIENT ADDRESS\b", "RETURN TO SENDER"),
+        (r"\bNO SUCH NUMBER\b", "RETURN TO SENDER"),
+        (r"\bADDRESSEE UNKNOWN\b", "RETURN TO SENDER"),
+        (r"\bVACANT\b", "RETURN TO SENDER"),
+        (r"\bUNCLAIMED\b", "RETURN TO SENDER"),
+        (r"\bREFUSED\b", "RETURN TO SENDER"),
+        (r"\bFORWARD EXPIRED\b", "RETURN TO SENDER"),
+        (r"\bRETURN TO SENDER PROCESSED\b", "RETURN TO SENDER"),
+        (r"\bRETURN TO SENDER\b", "RETURN TO SENDER"),
+        (r"\bDEAD MAIL / SENT TO MAIL RECOVERY CENTER\b", "EXCEPTION"),
+        (r"\bMAIL RECOVERY CENTER\b", "EXCEPTION"),
+        (r"\bALERT\b", "EXCEPTION"),
+        (r"\bEXCEPTION\b", "EXCEPTION"),
+
+        # No usable tracking record
+        (r"\bSTATUS NOT AVAILABLE\b", "NOT FOUND"),
+        (r"\bNOT TRACKABLE\b", "NOT FOUND"),
+        (r"\bTRACKING NUMBER MAY BE INCORRECT\b", "NOT FOUND"),
+        (r"\bLABEL DOES NOT EXIST\b", "NOT FOUND"),
+    ]
+
+    matches = []
+    for pattern, normalized in status_patterns:
+        match = re.search(pattern, upper, re.I)
+        if match:
+            matches.append(
+                (
+                    match.start(),
+                    -len(match.group(0)),
+                    normalized,
+                    match.group(0),
+                )
+            )
+
+    if not matches:
+        return "UNKNOWN"
+
+    # Earliest phrase after the tracking number is treated as current.
+    # At an equal position, the longest/more-specific phrase wins.
+    matches.sort(key=lambda item: (item[0], item[1]))
+    return matches[0][2]
+
+def _usps_card_segments(body, numbers):
+    """
+    Split the complete USPS page text into one bounded segment per tracking
+    number. Each segment ends where the next requested tracking number begins.
+    """
+    body_upper = body.upper()
+    occurrences = []
+
+    for number in numbers:
+        start = body_upper.find(number.upper())
+        if start >= 0:
+            occurrences.append((start, number))
+
+    occurrences.sort()
+    segments = {}
+
+    for index, (start, number) in enumerate(occurrences):
+        end = (
+            occurrences[index + 1][0]
+            if index + 1 < len(occurrences)
+            else min(len(body), start + 2500)
+        )
+        segments[number] = body[start:end]
+
+    return segments
 
 
 def _extract_usps_results(page, numbers, log):
@@ -503,34 +953,23 @@ def _extract_usps_results(page, numbers, log):
 
         time.sleep(1)
 
+    # Parse each shipment from its own bounded section of the page.
+    # Do not use broad parent containers because they may contain several
+    # shipment cards and progress labels such as "Delivered".
+    segments = _usps_card_segments(body, numbers)
     results = {}
+
     for number in numbers:
-        text = ""
-        try:
-            locator = page.get_by_text(number, exact=False).first
-            if locator.count():
-                text = locator.evaluate(
-                    """el => {
-                        let node = el;
-                        for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
-                            const t = (node.innerText || "").trim();
-                            if (t.length >= 20 && t.length <= 2500 &&
-                                /Delivered|Out for Delivery|In Transit|Moving Through Network|Pre-Shipment|Label Created|Accepted|USPS in Possession|Alert|Notice Left|Status Not Available|Not Trackable/i.test(t)) {
-                                return t;
-                            }
-                        }
-                        return (el.parentElement && el.parentElement.innerText) || el.innerText || "";
-                    }"""
-                )
-        except Exception:
-            text = ""
+        card_text = segments.get(number, "")
+        status = _normalize_usps_card_status(
+            card_text,
+            number,
+        )
+        results[number] = status
 
-        if not text:
-            index = body.find(number)
-            if index >= 0:
-                text = body[max(0, index - 200):index + 1800]
-
-        results[number] = _normalize_status(text)
+        log(
+            f"[USPS] Parsed {number}: {status}"
+        )
 
     return results
 
