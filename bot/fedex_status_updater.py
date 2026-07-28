@@ -288,19 +288,52 @@ def _usps_url(numbers):
 
 
 def _extract_usps_results(page, numbers):
-    try:
-        page.wait_for_function(
-            """nums => {
-                const text = document.body ? document.body.innerText : "";
-                return nums.some(n => text.includes(n));
-            }""",
-            numbers,
-            timeout=USPS_TIMEOUT,
-        )
-    except PlaywrightTimeoutError:
-        pass
+    """
+    Wait for USPS results without using Page.wait_for_function().
 
-    body = page.locator("body").inner_text(timeout=30000)
+    Some packaged Playwright installations can contain mismatched wrapper
+    and implementation versions. A normal Python polling loop avoids that
+    compatibility problem while still waiting for the dynamically rendered
+    USPS results.
+    """
+    deadline = time.time() + (USPS_TIMEOUT / 1000)
+    body = ""
+
+    while time.time() < deadline:
+        try:
+            body = page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body = ""
+
+        upper_body = body.upper()
+
+        if any(number in body for number in numbers):
+            break
+
+        if any(
+            phrase in upper_body
+            for phrase in (
+                "DELIVERED",
+                "OUT FOR DELIVERY",
+                "IN TRANSIT",
+                "MOVING THROUGH NETWORK",
+                "PRE-SHIPMENT",
+                "LABEL CREATED",
+                "USPS IN POSSESSION",
+                "STATUS NOT AVAILABLE",
+                "NOT TRACKABLE",
+                "VERIFY YOU ARE HUMAN",
+                "CAPTCHA",
+                "ACCESS DENIED",
+            )
+        ):
+            break
+
+        time.sleep(1)
+
+    if not body:
+        body = page.locator("body").inner_text(timeout=30000)
+
     upper = body.upper()
 
     if any(x in upper for x in (
@@ -379,7 +412,14 @@ def _track_usps_batch(numbers, log):
             except PlaywrightTimeoutError:
                 pass
 
-            return _extract_usps_results(page, numbers)
+            log("[USPS] Waiting for USPS result cards...")
+            results = _extract_usps_results(page, numbers)
+            log(
+                f"[USPS] USPS page returned "
+                f"{sum(1 for value in results.values() if value != 'UNKNOWN')} "
+                f"usable status(es)."
+            )
+            return results
         finally:
             browser.close()
 
@@ -432,7 +472,6 @@ def _update_usps(workbook, today, log):
             )
             results.update(_track_usps_batch(batch, log))
         except Exception as exc:
-            failed += len(batch)
             log(
                 f"[USPS] Batch {batch_no} failed: "
                 f"{type(exc).__name__}: {exc}"
