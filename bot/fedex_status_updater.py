@@ -54,6 +54,12 @@ MALCA_SHEETS = ("UNI", "EMBY", "FENIX", "SOL")
 MALCA_TRACKING_URL = "https://tracking.malca-amit.com/"
 MALCA_TIMEOUT = 60000
 
+UPS_RE = re.compile(r"\bUPS\b", re.I)
+UPS_SHEETS = ("UNI", "EMBY", "FENIX", "SOL")
+UPS_TRACKING_URL = "https://www.ups.com/track"
+UPS_TIMEOUT = 60000
+UPS_HUMAN_VERIFICATION_TIMEOUT = 600000
+
 USPS_BATCH_SIZE = 35
 USPS_URL = "https://tools.usps.com/go/TrackConfirmAction"
 USPS_TIMEOUT = 90000
@@ -249,6 +255,50 @@ def _normalize_malca_status(text):
     )):
         return "PICKED UP"
 
+    return value[:80]
+
+
+def _normalize_ups_status(text):
+    value = re.sub(r"\s+", " ", str(text or "")).strip().upper()
+    if not value:
+        return "UNKNOWN"
+    if any(x in value for x in (
+        "TRACKING INFORMATION IS NOT YET AVAILABLE",
+        "WE COULD NOT LOCATE THE SHIPMENT DETAILS",
+        "TRACKING NUMBER IS NOT VALID",
+        "INVALID TRACKING NUMBER",
+    )):
+        return "NOT FOUND"
+    if "DELIVERED" in value:
+        return "DELIVERED"
+    if "OUT FOR DELIVERY" in value:
+        return "OUT FOR DELIVERY"
+    if any(x in value for x in (
+        "DELIVERY ATTEMPT", "WE MISSED YOU",
+        "RECEIVER WAS NOT AVAILABLE",
+    )):
+        return "DELIVERY ATTEMPTED"
+    if any(x in value for x in (
+        "EXCEPTION", "DELAY", "RETURNING TO SENDER",
+        "RETURN TO SENDER", "HELD",
+    )):
+        return "EXCEPTION"
+    if any(x in value for x in (
+        "ON THE WAY", "IN TRANSIT", "DEPARTED FROM FACILITY",
+        "ARRIVED AT FACILITY", "PROCESSING AT UPS FACILITY",
+    )):
+        return "IN TRANSIT"
+    if any(x in value for x in (
+        "LABEL CREATED", "SHIPPER CREATED A LABEL",
+        "UPS DOESN'T HAVE POSSESSION", "UPS DOES NOT HAVE POSSESSION",
+    )):
+        return "LABEL CREATED"
+    if any(x in value for x in (
+        "WE HAVE YOUR PACKAGE", "PICKED UP", "ORIGIN SCAN",
+    )):
+        return "PICKED UP"
+    if "READY FOR CUSTOMER PICKUP" in value:
+        return "READY FOR PICKUP"
     return value[:80]
 
 
@@ -941,6 +991,279 @@ def _update_malca(workbook, today, log):
     }
 
 
+
+def _ups_tracking_url(tracking_number):
+    return (
+        f"{UPS_TRACKING_URL}?"
+        + urlencode({
+            "loc": "en_US",
+            "tracknum": tracking_number,
+            "requester": "ST",
+        })
+    )
+
+
+def _ups_challenge_present(body):
+    upper = str(body or "").upper()
+    return any(x in upper for x in (
+        "VERIFY YOU ARE HUMAN",
+        "CAPTCHA",
+        "SECURITY CHECK",
+        "ACCESS DENIED",
+        "PRESS AND HOLD",
+        "LET US KNOW YOU ARE HUMAN",
+    ))
+
+
+def _ups_result_present(body, tracking_number):
+    upper = str(body or "").upper()
+    return (
+        tracking_number.upper() in upper
+        and any(x in upper for x in (
+            "DELIVERED",
+            "OUT FOR DELIVERY",
+            "ON THE WAY",
+            "IN TRANSIT",
+            "LABEL CREATED",
+            "WE HAVE YOUR PACKAGE",
+            "PICKED UP",
+            "EXCEPTION",
+            "DELAY",
+            "DELIVERY ATTEMPT",
+            "READY FOR CUSTOMER PICKUP",
+            "TRACKING INFORMATION IS NOT YET AVAILABLE",
+            "WE COULD NOT LOCATE THE SHIPMENT DETAILS",
+            "INVALID TRACKING NUMBER",
+        ))
+    )
+
+
+def _ups_wait_for_result(page, tracking_number, log, allow_human):
+    deadline = time.time() + (UPS_TIMEOUT / 1000)
+    human_deadline = None
+    human_announced = False
+
+    while True:
+        try:
+            body = page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            body = ""
+
+        if _ups_result_present(body, tracking_number):
+            if human_announced:
+                log(
+                    "[UPS] Human verification completed. "
+                    "Tracking result detected."
+                )
+            return body
+
+        if _ups_challenge_present(body):
+            if not allow_human:
+                return None
+            if not human_announced:
+                human_announced = True
+                human_deadline = (
+                    time.time()
+                    + (UPS_HUMAN_VERIFICATION_TIMEOUT / 1000)
+                )
+                log(
+                    "[UPS] Human verification is required in the "
+                    "open Microsoft Edge window."
+                )
+                log(
+                    "[UPS] Complete it manually and leave Edge open. "
+                    "Processing will continue automatically."
+                )
+            if time.time() >= human_deadline:
+                raise RuntimeError(
+                    "UPS human verification was not completed "
+                    "within 10 minutes."
+                )
+        elif not human_announced and time.time() >= deadline:
+            return None
+
+        time.sleep(1)
+
+
+def _track_ups_number(playwright, tracking_number, log, visible):
+    browser = playwright.chromium.launch(
+        channel="msedge",
+        headless=not visible,
+        args=(
+            ["--disable-dev-shm-usage", "--start-maximized"]
+            if visible
+            else ["--disable-dev-shm-usage"]
+        ),
+    )
+    try:
+        context = browser.new_context(
+            locale="en-US",
+            viewport=None if visible else {
+                "width": 1440,
+                "height": 1000,
+            },
+        )
+        page = context.new_page()
+        page.set_default_timeout(30000)
+
+        mode = "visible assisted" if visible else "automatic"
+        log(
+            f"[UPS] Opening {mode} lookup for "
+            f"{tracking_number}."
+        )
+
+        page.goto(
+            _ups_tracking_url(tracking_number),
+            wait_until="domcontentloaded",
+            timeout=UPS_TIMEOUT,
+        )
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeoutError:
+            pass
+
+        body = _ups_wait_for_result(
+            page,
+            tracking_number,
+            log,
+            visible,
+        )
+        if not body:
+            return {"status": None}
+
+        return {
+            "status": _normalize_ups_status(body),
+        }
+    finally:
+        browser.close()
+
+
+def _update_ups(workbook, today, log):
+    changed = False
+    updated = unchanged = failed = assisted = 0
+    references = []
+
+    log("[UPS] Starting UPS website update.")
+    log(
+        "[UPS] Automatic lookup is attempted first; "
+        "visible assisted mode opens only if required."
+    )
+
+    for sheet_name in UPS_SHEETS:
+        ws = _sheet(workbook, sheet_name)
+        if ws is None:
+            continue
+
+        count = 0
+        for row in range(1, ws.max_row + 1):
+            carrier = str(ws.cell(row, COL_CARRIER).value or "")
+            number = _tracking(ws.cell(row, COL_TRACKING).value)
+            old = str(
+                ws.cell(row, COL_REMARK).value or ""
+            ).strip().upper()
+            shipped = _as_date(ws.cell(row, COL_DATE).value)
+
+            if not UPS_RE.search(carrier):
+                continue
+            if re.fullmatch(r"\\s*M\\s*/\\s*E\\s*", carrier, re.I):
+                continue
+            if not number or not _current_month(shipped, today):
+                continue
+            if old == "DELIVERED":
+                _set_status(ws, row, "DELIVERED")
+                changed = True
+                continue
+
+            references.append((ws, sheet_name, row, number, old))
+            count += 1
+
+        log(f"[UPS] {sheet_name}: {count} eligible shipment(s).")
+
+    if not references:
+        return {
+            "changed": changed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "failed": failed,
+            "assisted": assisted,
+        }
+
+    if sync_playwright is None:
+        return {
+            "changed": changed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "failed": len(references),
+            "assisted": assisted,
+        }
+
+    unique_numbers = list(dict.fromkeys(x[3] for x in references))
+    results = {}
+
+    with sync_playwright() as playwright:
+        for index, number in enumerate(unique_numbers, 1):
+            log(
+                f"[UPS] Tracking {index}/{len(unique_numbers)}: "
+                f"{number}"
+            )
+            try:
+                result = _track_ups_number(
+                    playwright,
+                    number,
+                    log,
+                    False,
+                )
+                if not result.get("status"):
+                    assisted += 1
+                    log(
+                        f"[UPS] Automatic lookup did not return a "
+                        f"usable result for {number}. "
+                        "Opening visible assisted mode."
+                    )
+                    result = _track_ups_number(
+                        playwright,
+                        number,
+                        log,
+                        True,
+                    )
+                results[number] = result
+            except Exception as exc:
+                results[number] = {"status": None}
+                log(
+                    f"[UPS] {number} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+    for ws, sheet_name, row, number, old in references:
+        status = (results.get(number) or {}).get("status")
+        if not status or status == "UNKNOWN":
+            failed += 1
+            log(
+                f"[UPS] {sheet_name} row {row}: "
+                f"no usable status for {number}."
+            )
+            continue
+        if status == old:
+            unchanged += 1
+            continue
+
+        _set_status(ws, row, status)
+        changed = True
+        updated += 1
+        log(
+            f"[UPS] {sheet_name} row {row}: "
+            f"{number} -> {status}"
+        )
+
+    return {
+        "changed": changed,
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+        "assisted": assisted,
+    }
+
+
 def update_fedex_statuses(
     excel_path,
     *,
@@ -964,7 +1287,7 @@ def update_fedex_statuses(
             "message": message,
         }
 
-    log("[TRACKING] Starting combined FedEx + USPS + Malca-Amit update.")
+    log("[TRACKING] Starting combined FedEx + USPS + UPS + Malca-Amit update.")
     log(f"[TRACKING] Current month: {today.strftime('%B %Y')}")
     log("[TRACKING] Writing statuses to Remark column F.")
 
@@ -981,6 +1304,11 @@ def update_fedex_statuses(
             today,
             log,
         )
+        ups = _update_ups(
+            workbook,
+            today,
+            log,
+        )
         malca = _update_malca(
             workbook,
             today,
@@ -990,6 +1318,7 @@ def update_fedex_statuses(
         if (
             fedex["changed"]
             or usps["changed"]
+            or ups["changed"]
             or malca["changed"]
         ):
             workbook.save(excel_path)
@@ -997,15 +1326,17 @@ def update_fedex_statuses(
         else:
             log("[TRACKING] No workbook changes were required.")
 
-        updated = fedex["updated"] + usps["updated"] + malca["updated"]
-        unchanged = fedex["unchanged"] + usps["unchanged"] + malca["unchanged"]
-        failed = fedex["failed"] + usps["failed"] + malca["failed"]
+        updated = fedex["updated"] + usps["updated"] + ups["updated"] + malca["updated"]
+        unchanged = fedex["unchanged"] + usps["unchanged"] + ups["unchanged"] + malca["unchanged"]
+        failed = fedex["failed"] + usps["failed"] + ups["failed"] + malca["failed"]
 
         message = (
             f"[TRACKING] Finished: updated={updated}, "
             f"unchanged={unchanged}, failed={failed}. "
             f"FedEx updated={fedex['updated']}; "
             f"USPS updated={usps['updated']}; "
+            f"UPS updated={ups['updated']}; "
+            f"UPS assisted={ups['assisted']}; "
             f"Malca-Amit updated={malca['updated']}; "
             f"Malca-Amit needs-info={malca['needs_info']}."
         )
@@ -1017,6 +1348,7 @@ def update_fedex_statuses(
             "failed": failed,
             "fedex": fedex,
             "usps": usps,
+            "ups": ups,
             "malca": malca,
             "message": message,
         }
@@ -1052,7 +1384,7 @@ class FedExStatusScheduler(threading.Thread):
         self._stop_event.set()
 
     def run(self):
-        self.log("FedEx + USPS + Malca-Amit status scheduler started.")
+        self.log("FedEx + USPS + UPS + Malca-Amit status scheduler started.")
 
         while not self._stop_event.is_set():
             now = datetime.now()
@@ -1085,4 +1417,4 @@ class FedExStatusScheduler(threading.Thread):
 
             self._stop_event.wait(self.poll_seconds)
 
-        self.log("FedEx + USPS + Malca-Amit status scheduler stopped.")
+        self.log("FedEx + USPS + UPS + Malca-Amit status scheduler stopped.")
