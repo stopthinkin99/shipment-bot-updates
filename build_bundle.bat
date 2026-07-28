@@ -34,6 +34,7 @@ echo [4/6] Installing packages into bundle\python...
 %BUNDLE%\python\python.exe -m pip install ^
     watchdog openpyxl pdf2image Pillow numpy ^
     pytesseract pywin32 certifi msal requests ^
+    keyring truststore playwright ^
     --target %BUNDLE%\python\Lib\site-packages ^
     --no-warn-script-location -q
 echo     Packages installed.
@@ -61,6 +62,10 @@ for %%f in (
     cleanup.py
     daily_digest.py
     email_sender.py
+    fedex_status_updater.py
+    fedex_tracking.py
+    fedex_credentials.py
+    manual_review_dialog.py
 ) do (
     if exist %%f (
         copy /Y %%f %BUNDLE%\%%f > nul

@@ -6,3 +6,4 @@ msal
 requests
 keyring
 truststore
+playwright
