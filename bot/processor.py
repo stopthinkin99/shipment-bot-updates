@@ -50,6 +50,103 @@ def _is_blank(value) -> bool:
     return value is None or not str(value).strip()
 
 
+def _compact(value) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _tracking_is_valid(value, carrier) -> bool:
+    compact = _compact(value)
+    carrier_upper = str(carrier or "").upper().strip()
+
+    if not compact:
+        return False
+
+    if compact.startswith("1Z"):
+        return bool(
+            re.fullmatch(r"1Z[A-Z0-9]{16}", compact)
+            and len(re.findall(r"\d", compact)) >= 8
+        )
+
+    if "UPS" in carrier_upper:
+        return bool(
+            re.fullmatch(r"1Z[A-Z0-9]{16}", compact)
+            and len(re.findall(r"\d", compact)) >= 8
+        )
+
+    if (
+        "FEDEX" in carrier_upper
+        or "FX" in carrier_upper
+        or re.fullmatch(r"M\s*/\s*E", carrier_upper)
+    ):
+        return bool(re.fullmatch(r"\d{12}|\d{15}", compact))
+
+    if "USPS" in carrier_upper or "POSTAL" in carrier_upper:
+        return bool(re.fullmatch(r"\d{20,34}", compact))
+
+    if "MALCA" in carrier_upper or "MALKA" in carrier_upper:
+        return bool(re.fullmatch(r"\d{5,20}", compact))
+
+    if "BRINKS" in carrier_upper:
+        return bool(re.fullmatch(r"\d{7,20}", compact))
+
+    return (
+        7 <= len(compact) <= 34
+        and len(re.findall(r"\d", compact)) >= 6
+    )
+
+
+def _invoice_is_valid(value) -> bool:
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    if not raw:
+        return False
+
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9/,\- ]{2,60}", raw, re.I):
+        return False
+
+    numeric_tokens = re.findall(r"\d+", raw)
+
+    if len(numeric_tokens) >= 2:
+        first = numeric_tokens[0]
+
+        for token in numeric_tokens[1:]:
+            if len(token) > len(first) and token.startswith(first):
+                return False
+
+        if (
+            not re.search(r"[/,\-]", raw)
+            and any(len(token) >= len(first) for token in numeric_tokens[1:])
+        ):
+            return False
+
+    return True
+
+
+def _invalidate_suspicious_fields(record: dict, log_fn=print) -> dict:
+    checked = dict(record)
+
+    tracking = checked.get("tracking_number", "")
+    carrier = checked.get("carrier", "")
+    if tracking and not _tracking_is_valid(tracking, carrier):
+        log_fn(
+            "[REVIEW] Suspicious tracking number rejected: "
+            f"{tracking!r}. Manual entry required."
+        )
+        checked["_rejected_tracking_number"] = tracking
+        checked["tracking_number"] = ""
+
+    invoice = checked.get("invoice", "")
+    if invoice and not _invoice_is_valid(invoice):
+        log_fn(
+            "[REVIEW] Suspicious Invoice/PO/Memo value rejected: "
+            f"{invoice!r}. Manual entry required."
+        )
+        checked["_rejected_invoice"] = invoice
+        checked["invoice"] = ""
+
+    return checked
+
+
 def _missing_fields(record: dict) -> list[str]:
     """Return popup-required record keys whose values are blank."""
     return [
@@ -176,6 +273,7 @@ def process_file(
                 continue
 
             record = _prepare_record(raw_record)
+            record = _invalidate_suspicious_fields(record, log_fn)
             missing = _missing_fields(record)
 
             if missing:
@@ -252,6 +350,7 @@ def process_file(
                     continue
 
                 record = _prepare_record(corrected)
+                record = _invalidate_suspicious_fields(record, log_fn)
                 remaining = _missing_fields(record)
 
                 if remaining:

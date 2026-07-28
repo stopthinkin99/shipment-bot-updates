@@ -1,3 +1,4 @@
+
 import os
 import re
 import tkinter as tk
@@ -8,7 +9,7 @@ from PIL import Image, ImageTk
 SHEET_OPTIONS = ("UNI", "EMBY", "FENIX", "SOL")
 CARRIER_OPTIONS = (
     "UPS GROUND", "UPS NEXT DAY AIR", "UPS 2ND DAY AIR",
-    "FEDEX", "BX FX S/O", "BX FX P/O", "USPS",
+    "FEDEX", "M/E", "BX FX S/O", "BX FX P/O", "USPS",
     "MALCA-AMIT", "BRINKS",
 )
 FIELDS = (

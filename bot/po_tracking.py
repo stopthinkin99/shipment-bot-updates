@@ -65,6 +65,45 @@ def _normalize_ups_candidate(value):
     return ""
 
 
+
+def _normalize_document_number(value):
+    value = str(value or "").strip()
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"\s*/\s*", "/", value)
+    value = re.sub(r"\s*-\s*", "-", value)
+    value = re.sub(r"\s*,\s*", ", ", value)
+    return value.strip(" .,:;-")
+
+
+def _extract_document_number(text, labels):
+    label_pattern = "|".join(labels)
+
+    for raw_line in str(text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        match = re.search(
+            rf"\b(?:{label_pattern})\b"
+            r"\s*(?:NUMBER|NO\.?|#)?\s*[:\-]?\s*"
+            r"([A-Z0-9][A-Z0-9/,\- ]{2,60})",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+
+        candidate = match.group(1)
+        candidate = re.split(
+            r"\s{2,}|\b(?:DATE|SHIP TO|TRACKING|WEIGHT|PHONE|REF(?:ERENCE)?)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        candidate = _normalize_document_number(candidate)
+
+        if re.search(r"\d", candidate):
+            return candidate
+
+    return ""
+
 def extract_tracking_number(text):
     """
     Extract tracking safely.
@@ -178,61 +217,17 @@ def _ocr_pil_image(image):
 
 def extract_fields(text):
     data = {
-        "Tracking Number": "",
-        "PO Number": "",
-        "INV Number": "",
+        "Tracking Number": extract_tracking_number(text),
+        "PO Number": _extract_document_number(
+            text,
+            (r"P[\s.]*[O0]", r"PURCHASE\s+ORDER"),
+        ),
+        "INV Number": _extract_document_number(
+            text,
+            (r"I[\s.]*N[\s.]*V(?:OICE)?", r"INVOICE", r"MEMO"),
+        ),
     }
-
-    data["Tracking Number"] = extract_tracking_number(text)
-
-    # PO Number, including Brinks abbreviated lists such as:
-    # PO # 86100087, 89, 90, 107
-    po_line_match = re.search(
-        r"\bP[\s.]*[O0]\s*#?\s*[:\-]?\s*"
-        r"([0-9]{5,}(?:\s*[,;/]\s*[0-9]{1,8})+|[0-9]{5,})",
-        text,
-        re.IGNORECASE,
-    )
-    if po_line_match:
-        raw_po = po_line_match.group(1).strip()
-        parts = re.findall(r"\d+", raw_po)
-        if parts:
-            first = parts[0]
-            expanded = [first]
-            for suffix in parts[1:]:
-                if len(suffix) < len(first):
-                    expanded.append(first[:-len(suffix)] + suffix)
-                else:
-                    expanded.append(suffix)
-            data["PO Number"] = ", ".join(expanded)
-
-    if not data["PO Number"]:
-        for line in text.splitlines():
-            if re.search(r"\bP[\s.]*[O0]\b", line, re.IGNORECASE):
-                values = re.findall(r"\d{5,}", line)
-                if values:
-                    data["PO Number"] = values[0]
-                    break
-
-    # INV Number
-    match = re.search(
-        r"\bINV[\s:]*([0-9]{4,})",
-        text,
-        re.IGNORECASE,
-    )
-    if match:
-        data["INV Number"] = match.group(1).strip()
-
-    if not data["INV Number"]:
-        for line in text.splitlines():
-            if re.search(r"\bINV\b", line, re.IGNORECASE):
-                numbers = re.findall(r"\d{4,}", line)
-                if numbers:
-                    data["INV Number"] = numbers[0]
-                    break
-
     return data
-
 
 def get_po_and_tracking(pdf_path):
     """Return tracking, PO, and INV data for every PDF page."""
@@ -260,3 +255,4 @@ def get_po_and_tracking(pdf_path):
                 pass
 
     return results
+

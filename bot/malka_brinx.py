@@ -235,21 +235,55 @@ def _base_record(filename, page, carrier):
     }
 
 
+
+def _normalize_document_number(value):
+    value = str(value or "").strip()
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"\s*/\s*", "/", value)
+    value = re.sub(r"\s*-\s*", "-", value)
+    value = re.sub(r"\s*,\s*", ", ", value)
+    return value.strip(" .,:;-")
+
+
+def _extract_document_number(text, labels):
+    label_pattern = "|".join(labels)
+
+    for raw_line in str(text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        match = re.search(
+            rf"\b(?:{label_pattern})\b"
+            r"\s*(?:NUMBER|NO\.?|#)?\s*[:\-]?\s*"
+            r"([A-Z0-9][A-Z0-9/,\- ]{2,60})",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+
+        candidate = match.group(1)
+        candidate = re.split(
+            r"\s{2,}|\b(?:DATE|SHIP TO|TRACKING|WEIGHT|PHONE|REF(?:ERENCE)?)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        candidate = _normalize_document_number(candidate)
+
+        if re.search(r"\d", candidate):
+            return candidate
+
+    return ""
+
 def _extract_malca_amit(text, filename, page):
     data = _base_record(filename, page, "MALCA-AMIT")
     data["Full Extracted Text"] = text
     data["sheet"] = _route_by_sender(text)
     data["date"] = _parse_date(text)
 
-    for pattern in (
-        r"\bINV\s*[:#]?\s*([A-Z0-9\-]{4,})",
-        r"\bP[\s.]*O\s*[:#]?\s*([A-Z0-9\-]{4,})",
-        r"\bREF\s*[:#]?\s*([A-Z0-9\-]{4,})",
-    ):
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            data["invoice"] = match.group(1)
-            break
+    data["invoice"] = _extract_document_number(
+        text,
+        (r"INV(?:OICE)?", r"P[\s.]*O", r"MEMO", r"REF(?:ERENCE)?"),
+    )
 
     match = re.search(r"Shipment\s*#\s*[:\-]?\s*([0-9]{5,})", text, re.IGNORECASE)
     if match:

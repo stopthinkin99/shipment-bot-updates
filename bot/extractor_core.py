@@ -131,61 +131,19 @@ _STOP_BLOCK_PATTERN = re.compile(
 )
 
 
-def _looks_like_address(line):
-    upper = str(line or "").upper()
-
-    if _ADDRESS_WORD_PATTERN.search(upper):
-        return True
-
-    if re.search(
-        r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b",
-        upper,
-    ):
-        return True
-
-    if re.fullmatch(r"[\d\s()+\-]+", str(line or "").strip()):
-        return True
-
-    return False
-
-
-def _looks_like_company(line):
-    value = str(line or "").strip()
-    upper = value.upper()
-
-    if not value:
-        return False
-
-    if _COMPANY_SUFFIX_PATTERN.search(value):
-        return True
-
-    company_keywords = re.compile(
-        r"\b(?:"
-        r"CREATION|DESIGN|DIAMOND|DIAMONDS|JEWEL|JEWELRY|"
-        r"INTERNATIONAL|INDUSTRIES|GROUP|SUPPLY|TRADING|"
-        r"MANUFACTURING|MFG|CORPORATION|COMPANY|CO|"
-        r"ASSOCIATES|ENTERPRISES|HOLDINGS|BRANDS"
-        r")\b",
-        re.IGNORECASE,
-    )
-
-    return bool(company_keywords.search(upper))
-
-
 def _extract_ship_to_company(text):
     """
-    Extract the company from a SEND TO / SHIP TO block.
+    Extract the actual company from the SHIP TO block.
 
     Example:
-        Send To: Aayan Boradia
-        Uni Creation
+        SHIP TO:
+        BRAND THIES
+        (401) 463-2509
+        SWAROVSKI AG.
+        7830 NATIONAL TURNPIKE
 
-    Result:
-        Uni Creation
-
-    The first line is usually a contact person. The extractor prefers the
-    following company-looking line and only falls back to the contact when
-    no company line is available.
+    Returns:
+        SWAROVSKI AG
     """
     lines = [
         line.strip()
@@ -193,40 +151,35 @@ def _extract_ship_to_company(text):
         if line.strip()
     ]
 
-    marker_index = None
-    inline_contact = ""
+    ship_to_index = None
 
     for index, line in enumerate(lines):
-        match = re.search(
-            r"\b(?:SHIP|SEND)\s*TO\s*:?\s*(.*)$",
-            line,
-            re.IGNORECASE,
-        )
-
-        if match:
-            marker_index = index
-            inline_contact = match.group(1).strip(" .,:;-")
+        if re.search(r"\bSHIP\s*TO\s*:?", line, re.IGNORECASE):
+            ship_to_index = index
             break
 
-    if marker_index is None:
+    if ship_to_index is None:
         return ""
 
     candidates = []
 
-    if inline_contact:
-        candidates.append(inline_contact)
-
-    for line in lines[marker_index + 1:marker_index + 12]:
+    for line in lines[ship_to_index + 1:ship_to_index + 12]:
         cleaned = line.strip()
         upper = cleaned.upper().strip(" .")
 
         if _STOP_BLOCK_PATTERN.search(upper):
             break
 
+        if re.fullmatch(r"[\d\s()+\-]+", cleaned):
+            continue
+
         if upper.startswith(("C/O ", "C/O:", "ATTN ", "ATTN:")):
             continue
 
-        if _looks_like_address(cleaned):
+        if _ADDRESS_WORD_PATTERN.search(upper):
+            continue
+
+        if re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", upper):
             continue
 
         letters = len(re.findall(r"[A-Z]", upper))
@@ -237,26 +190,61 @@ def _extract_ship_to_company(text):
 
         candidates.append(cleaned.rstrip(" ."))
 
-    if not candidates:
-        return ""
-
-    # Prefer company-looking lines after the contact.
-    for candidate in candidates[1:]:
-        if _looks_like_company(candidate):
-            return candidate
-
-    # Then accept any company-looking line.
     for candidate in candidates:
-        if _looks_like_company(candidate):
+        if _COMPANY_SUFFIX_PATTERN.search(candidate):
             return candidate
 
-    # When two clean lines remain, treat the first as the contact and the
-    # second as the company.
-    if len(candidates) >= 2:
-        return candidates[1]
+    company_keywords = re.compile(
+        r"\b(?:DIAMOND|JEWEL|JEWELRY|DESIGN|CREATION|"
+        r"INTERNATIONAL|INDUSTRIES|GROUP|SUPPLY)\b",
+        re.IGNORECASE,
+    )
 
-    return candidates[0]
+    for candidate in candidates:
+        if company_keywords.search(candidate):
+            return candidate
 
+    return candidates[0] if candidates else ""
+
+
+
+def _normalize_document_number(value):
+    value = str(value or "").strip()
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"\s*/\s*", "/", value)
+    value = re.sub(r"\s*-\s*", "-", value)
+    value = re.sub(r"\s*,\s*", ", ", value)
+    return value.strip(" .,:;-")
+
+
+def _extract_document_number(text, labels):
+    label_pattern = "|".join(labels)
+
+    for raw_line in str(text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        match = re.search(
+            rf"\b(?:{label_pattern})\b"
+            r"\s*(?:NUMBER|NO\.?|#)?\s*[:\-]?\s*"
+            r"([A-Z0-9][A-Z0-9/,\- ]{2,60})",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+
+        candidate = match.group(1)
+        candidate = re.split(
+            r"\s{2,}|\b(?:DATE|SHIP TO|TRACKING|WEIGHT|PHONE|REF(?:ERENCE)?)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        candidate = _normalize_document_number(candidate)
+
+        if re.search(r"\d", candidate):
+            return candidate
+
+    return ""
 
 def parse_core_fields(text, filename, page):
     data = {
@@ -274,37 +262,16 @@ def parse_core_fields(text, filename, page):
         "Application Run Date and time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    # PO Number, including compact Brinks lists.
-    po_match = re.search(
-        r"\bP[\s.]*[O0]\s*#?\s*[:\-]?\s*"
-        r"([0-9]{5,}(?:\s*[,;/]\s*[0-9]{1,8})+|[0-9]{5,})",
+    # Preserve PO / Invoice / Memo exactly as printed.
+    data["PO Number"] = _extract_document_number(
         text,
-        re.IGNORECASE,
+        (r"P[\s.]*[O0]", r"PURCHASE\s+ORDER"),
     )
-    if po_match:
-        parts = re.findall(r"\d+", po_match.group(1))
-        if parts:
-            first = parts[0]
-            expanded = [first]
-            for suffix in parts[1:]:
-                expanded.append(
-                    first[:-len(suffix)] + suffix
-                    if len(suffix) < len(first)
-                    else suffix
-                )
-            data["PO Number"] = ", ".join(expanded)
 
-    # INV Number
-    m = re.search(r'\bI[\s.]*N[\s.]*V[\s:#]*([0-9]{4,})', text, re.IGNORECASE)
-    if m:
-        data["INV Number"] = m.group(1).strip()
-    if not data["INV Number"]:
-        for line in text.split('\n'):
-            if re.search(r'\bI[\s.]*N[\s.]*V\b', line, re.IGNORECASE):
-                nums = re.findall(r'\d{4,}', line)
-                if nums:
-                    data["INV Number"] = nums[0]
-                    break
+    data["INV Number"] = _extract_document_number(
+        text,
+        (r"I[\s.]*N[\s.]*V(?:OICE)?", r"INVOICE", r"MEMO"),
+    )
 
     # Indexed UPS reference, e.g. REF 1:47122997
     m = re.search(
