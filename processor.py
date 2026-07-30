@@ -1,8 +1,7 @@
 """
 processor.py
 ------------
-Coordinates label extraction, manual correction, Excel writing, and
-fallback email alerts.
+Coordinates label extraction, manual correction, and Excel writing.
 
 New behavior:
 - Complete records are written directly to Excel.
@@ -10,18 +9,18 @@ New behavior:
 - Extracted values are prefilled; the user completes only missing fields.
 - The corrected record is written after the user clicks Done.
 - A cancelled/failed review is not written to Excel.
-- Email alerts remain only as a fallback for extraction failure, popup
-  cancellation/failure, or Excel-write failure.
+- Processing problems are handled through the manual-review popup.
+- No shipment-team email is sent by this module.
 """
 
 import os
+import re
 import shutil
 from datetime import date
 from typing import Callable, Iterable, Optional
 
 from parser import parse_label
 from excel_writer import update_excel
-from mailer import send_alert
 
 
 # Date is automatically filled with today's date when OCR misses it.
@@ -181,6 +180,78 @@ def _prepare_record(record: dict) -> dict:
     return prepared
 
 
+def _request_manual_review(
+    file_path: str,
+    record: dict,
+    review_callback: ReviewCallback | None,
+    log_fn=print,
+) -> dict | None:
+    """
+    Open the existing manual-review popup.
+
+    Returns a complete validated record, or None when review cannot be
+    completed. No fallback email is sent.
+    """
+    prepared = _prepare_record(record)
+    prepared = _invalidate_suspicious_fields(prepared, log_fn)
+    missing = _missing_fields(prepared)
+
+    if not missing:
+        return prepared
+
+    missing_text = _format_missing_fields(missing)
+    log_fn(
+        "[REVIEW] Required fields need completion before Excel is updated: "
+        f"{missing_text}."
+    )
+
+    if review_callback is None:
+        log_fn(
+            "[REVIEW ERROR] Manual review was required, but no review "
+            "callback was provided. Shipment was not written."
+        )
+        return None
+
+    try:
+        corrected = review_callback(file_path, prepared)
+    except Exception as exc:
+        log_fn(
+            "[REVIEW ERROR] Manual-review popup failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return None
+
+    if corrected is None:
+        log_fn(
+            "[REVIEW CANCELLED] Shipment was not written to Excel."
+        )
+        return None
+
+    if not isinstance(corrected, dict):
+        log_fn(
+            "[REVIEW ERROR] Manual-review popup returned an invalid result: "
+            f"{type(corrected).__name__}"
+        )
+        return None
+
+    corrected = _prepare_record(corrected)
+    corrected = _invalidate_suspicious_fields(corrected, log_fn)
+    remaining = _missing_fields(corrected)
+
+    if remaining:
+        log_fn(
+            "[REVIEW ERROR] Required fields are still missing: "
+            f"{_format_missing_fields(remaining)}."
+        )
+        return None
+
+    log_fn(
+        "[REVIEW] Manual completion accepted. "
+        "Writing corrected shipment to Excel."
+    )
+    return corrected
+
+
 def _move_to_done(
     file_path: str,
     done_folder: str,
@@ -216,11 +287,10 @@ def process_file(
     review_callback: ReviewCallback | None = None,
 ):
     """
-    Extract `file_path`, request manual correction when necessary, and write
-    completed records to `excel_path`.
+    Extract a label, request manual correction whenever extraction or
+    validation fails, and write only a complete record to Excel.
 
-    Returns:
-        list[dict]: records successfully written to Excel.
+    No email alert is sent by this workflow.
     """
     if not excel_path:
         log_fn("[ERROR] No Excel tracking file was supplied by app.py.")
@@ -241,188 +311,73 @@ def process_file(
 
     try:
         records = parse_label(file_path)
+    except Exception as exc:
+        # Parser failure must still open the popup instead of emailing.
+        log_fn(
+            "[ERROR] Parser failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        records = [{}]
 
-        if not records:
-            reason = "No shipment records could be extracted from the PDF."
-            log_fn(f"[ERROR] {reason}")
+    if not records:
+        log_fn(
+            "[REVIEW] No shipment record was extracted. "
+            "Opening manual-review popup."
+        )
+        records = [{}]
 
-            send_alert(
-                pdf_path=file_path,
-                data={},
-                reason=reason,
-                log_fn=log_fn,
+    written_records = []
+
+    for index, raw_record in enumerate(records, start=1):
+        if not isinstance(raw_record, dict):
+            log_fn(
+                "[REVIEW] Extractor returned an invalid record on "
+                f"page {index}; opening manual-review popup."
             )
-            return []
+            raw_record = {}
 
-        written_records = []
+        record = _prepare_record(raw_record)
+        record = _invalidate_suspicious_fields(record, log_fn)
 
-        for index, raw_record in enumerate(records, start=1):
-            if not isinstance(raw_record, dict):
-                reason = (
-                    f"Extractor returned an invalid record on page {index}: "
-                    f"{type(raw_record).__name__}"
-                )
-                log_fn(f"[ERROR] {reason}")
-
-                send_alert(
-                    pdf_path=file_path,
-                    data={},
-                    reason=reason,
-                    log_fn=log_fn,
-                )
-                continue
-
-            record = _prepare_record(raw_record)
-            record = _invalidate_suspicious_fields(record, log_fn)
-            missing = _missing_fields(record)
-
-            if missing:
-                missing_text = _format_missing_fields(missing)
-                log_fn(
-                    "[REVIEW] Required fields need completion before "
-                    f"Excel is updated: {missing_text}."
-                )
-
-                if review_callback is None:
-                    reason = (
-                        "Manual review was required, but app.py did not "
-                        "provide a review callback. Missing: "
-                        f"{missing_text}."
-                    )
-                    log_fn(f"[REVIEW ERROR] {reason}")
-
-                    send_alert(
-                        pdf_path=file_path,
-                        data=record,
-                        reason=reason,
-                        log_fn=log_fn,
-                    )
-                    continue
-
-                try:
-                    corrected = review_callback(
-                        file_path,
-                        record,
-                    )
-                except Exception as exc:
-                    reason = (
-                        "Manual-review popup failed: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                    log_fn(f"[REVIEW ERROR] {reason}")
-
-                    send_alert(
-                        pdf_path=file_path,
-                        data=record,
-                        reason=reason,
-                        log_fn=log_fn,
-                    )
-                    continue
-
-                if corrected is None:
-                    reason = (
-                        "The user cancelled manual review. "
-                        "The shipment was not written to Excel."
-                    )
-                    log_fn(f"[REVIEW CANCELLED] {reason}")
-
-                    send_alert(
-                        pdf_path=file_path,
-                        data=record,
-                        reason=reason,
-                        log_fn=log_fn,
-                    )
-                    continue
-
-                if not isinstance(corrected, dict):
-                    reason = (
-                        "Manual-review popup returned an invalid result: "
-                        f"{type(corrected).__name__}"
-                    )
-                    log_fn(f"[REVIEW ERROR] {reason}")
-
-                    send_alert(
-                        pdf_path=file_path,
-                        data=record,
-                        reason=reason,
-                        log_fn=log_fn,
-                    )
-                    continue
-
-                record = _prepare_record(corrected)
-                record = _invalidate_suspicious_fields(record, log_fn)
-                remaining = _missing_fields(record)
-
-                if remaining:
-                    remaining_text = _format_missing_fields(remaining)
-                    reason = (
-                        "Manual review closed with required fields still "
-                        f"missing: {remaining_text}."
-                    )
-                    log_fn(f"[REVIEW ERROR] {reason}")
-
-                    send_alert(
-                        pdf_path=file_path,
-                        data=record,
-                        reason=reason,
-                        log_fn=log_fn,
-                    )
-                    continue
-
-                log_fn(
-                    "[REVIEW] Manual completion accepted. "
-                    "Writing corrected shipment to Excel."
-                )
-
-            try:
-                update_excel(excel_path, record)
-                written_records.append(record)
-
-                log_fn(
-                    f"[OK] Written to sheet '{record['sheet']}': "
-                    f"invoice={record.get('invoice') or '—'}"
-                )
-            except Exception as exc:
-                reason = (
-                    "Excel write failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                log_fn(f"[ERROR] {reason}")
-
-                send_alert(
-                    pdf_path=file_path,
-                    data=record,
-                    reason=reason,
-                    log_fn=log_fn,
-                )
-                continue
-
-        if not written_records:
-            log_fn("[ERROR] Nothing was written to Excel.")
-            return []
-
-        if done_folder:
-            _move_to_done(
+        if _missing_fields(record):
+            record = _request_manual_review(
                 file_path,
-                done_folder,
+                record,
+                review_callback,
                 log_fn,
             )
 
-        return written_records
+            if record is None:
+                continue
 
-    except Exception as exc:
-        reason = (
-            f"Processing failed: {type(exc).__name__}: {exc}"
-        )
-        log_fn(f"[ERROR] {reason}")
+        try:
+            update_excel(excel_path, record)
+            written_records.append(record)
 
-        send_alert(
-            pdf_path=file_path,
-            data={},
-            reason=reason,
-            log_fn=log_fn,
-        )
+            log_fn(
+                f"[OK] Written to sheet '{record['sheet']}': "
+                f"invoice={record.get('invoice') or '—'}"
+            )
+        except Exception as exc:
+            log_fn(
+                "[ERROR] Excel write failed: "
+                f"{type(exc).__name__}: {exc}. "
+                "Shipment was not written."
+            )
+            continue
+
+    if not written_records:
+        log_fn("[ERROR] Nothing was written to Excel.")
         return []
+
+    if done_folder:
+        _move_to_done(
+            file_path,
+            done_folder,
+            log_fn,
+        )
+
+    return written_records
 
 
 # Existing app.py imports processor.process_label.
