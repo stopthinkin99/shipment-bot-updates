@@ -19,19 +19,54 @@ import pytesseract
 # ------------------------------------------------------------------ #
 #  PATHS — resolved relative to bundle so works on any PC
 # ------------------------------------------------------------------ #
-_BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) \
-        else Path(__file__).parent
+def _find_tesseract_paths():
+    """
+    Find bundled or installed Tesseract without using a user-specific path.
+    """
+    if getattr(sys, "frozen", False):
+        app_dir = Path(sys.executable).resolve().parent
+    else:
+        app_dir = Path(__file__).resolve().parent
 
-TESSERACT_CMD = str(_BASE / "Tesseract-OCR" / "tesseract.exe")
-POPPLER_PATH  = str(_BASE / "poppler" / "bin")
+    meipass = Path(
+        getattr(sys, "_MEIPASS", app_dir)
+    )
 
-# Fallback to original paths if running directly on dev machine
-if not os.path.exists(TESSERACT_CMD):
-    TESSERACT_CMD = r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
-if not os.path.exists(POPPLER_PATH):
-    POPPLER_PATH = r"C:\Users\aayan.boradia\Downloads\poppler-26.02.0\Library\bin"
+    candidates = [
+        app_dir / "Tesseract-OCR",
+        app_dir / "bundle" / "Tesseract-OCR",
+        meipass / "Tesseract-OCR",
+        Path("C:/Program Files/Tesseract-OCR"),
+        Path("C:/Program Files (x86)/Tesseract-OCR"),
+    ]
 
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+    for folder in candidates:
+        exe = folder / "tesseract.exe"
+        tessdata = folder / "tessdata"
+
+        if exe.is_file() and tessdata.is_dir():
+            return exe, tessdata
+
+    checked = "\n".join(
+        f" - {folder}" for folder in candidates
+    )
+
+    raise FileNotFoundError(
+        "Tesseract OCR could not be found.\n"
+        "Checked:\n"
+        f"{checked}"
+    )
+
+
+_TESSERACT, _TESSDATA = _find_tesseract_paths()
+
+pytesseract.pytesseract.tesseract_cmd = str(
+    _TESSERACT
+)
+
+os.environ["TESSDATA_PREFIX"] = str(
+    _TESSDATA
+)
 
 OCR_DPI        = 300   # render DPI — 300 is the sweet spot for Tesseract
 UPSCALE        = 2     # multiply resolution before OCR
