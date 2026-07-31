@@ -695,53 +695,69 @@ def _usps_url(numbers):
 
 def _normalize_usps_card_status(card_text, tracking_number):
     """
-    Extract the CURRENT USPS status from one bounded shipment card.
+    Read the current status from one USPS result card.
 
-    USPS pages contain a progress bar with generic stages:
-        Pre-Shipment / In Transit / Out for Delivery / Delivered
-
-    Those stage labels are not necessarily the current status. Therefore:
-    - active/non-final statuses take priority;
-    - DELIVERED requires a detailed delivery statement;
-    - a bare progress-bar word "Delivered" is ignored unless it appears
-      immediately as the current heading and no active status is present.
+    USPS result cards can include progress-stage labels such as
+    Pre-Shipment, In Transit, Out for Delivery, and Delivered. Those labels
+    must not be mistaken for the current scan. We therefore select the
+    earliest recognized USPS status phrase appearing after the tracking
+    number inside that shipment's bounded card text.
     """
-    raw = re.sub(r"\r", "", str(card_text or ""))
-    upper = raw.upper()
+    text = re.sub(r"\r", "", str(card_text or ""))
+    upper = text.upper()
 
     number_index = upper.find(tracking_number.upper())
     if number_index >= 0:
-        raw = raw[number_index + len(tracking_number):]
         upper = upper[number_index + len(tracking_number):]
 
-    raw = raw[:2200]
-    upper = upper[:2200]
+    # Restrict parsing to the beginning of this individual shipment card.
+    # This avoids footer content, historical events, and the next card.
+    upper = upper[:1800]
 
-    lines = [
-        re.sub(r"\s+", " ", line).strip()
-        for line in raw.splitlines()
-        if line.strip()
-    ]
-    progress_only = {
-        "PRE-SHIPMENT",
-        "IN TRANSIT",
-        "OUT FOR DELIVERY",
-        "DELIVERED",
-    }
-    useful_lines = [
-        line for line in lines
-        if line.upper().strip(" :-") not in progress_only
-    ]
-    useful = "\n".join(useful_lines)
-    useful_upper = useful.upper()
+    # Order matters only when phrases begin at the same position.
+    # More specific USPS phrases appear before broader phrases.
+    status_patterns = [
+        # Successfully delivered
+        (r"\bDELIVERED(?:,\s*TO\s+AGENT)?\b", "DELIVERED"),
+        (r"\bDELIVERED TO AGENT FOR FINAL DELIVERY\b", "DELIVERED"),
+        (r"\bDELIVERED TO POSTAL AGENT\b", "DELIVERED"),
+        (r"\bPICKED UP AT POST OFFICE\b", "DELIVERED"),
+        (r"\bPICKED UP BY INDIVIDUAL AT POST OFFICE\b", "DELIVERED"),
 
-    active_patterns = [
+        # Delivery today / redelivery
         (r"\bOUT FOR REDELIVERY\b", "OUT FOR DELIVERY"),
         (r"\bOUT FOR DELIVERY\b", "OUT FOR DELIVERY"),
-        (r"\bON THE WAY\b", "IN TRANSIT"),
-        (r"\bMOVING THROUGH NETWORK\b", "IN TRANSIT"),
-        (r"\bIN[- ]TRANSIT,\s*ARRIVING LATE\b", "IN TRANSIT - DELAYED"),
+        (r"\bARRIVED AT POST OFFICE\b", "PREPARING FOR DELIVERY"),
+        (r"\bPREPARING FOR DELIVERY\b", "PREPARING FOR DELIVERY"),
+
+        # Pickup / held
+        (r"\bAVAILABLE FOR REDELIVERY OR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bAVAILABLE FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bHELD AT POST OFFICE,\s*AT CUSTOMER REQUEST\b", "AVAILABLE FOR PICKUP"),
+        (r"\bHELD AT POST OFFICE\b", "AVAILABLE FOR PICKUP"),
+        (r"\bREADY FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
+        (r"\bPREPARED FOR REDELIVERY\b", "PREPARING FOR REDELIVERY"),
+        (r"\bREDELIVERY SCHEDULED\b", "REDELIVERY SCHEDULED"),
+        (r"\bREMINDER TO SCHEDULE REDELIVERY OF YOUR ITEM\b", "DELIVERY ATTEMPTED"),
+
+        # Attempted / not completed
+        (r"\bNOTICE LEFT \(NO AUTHORIZED RECIPIENT AVAILABLE\)\b", "DELIVERY ATTEMPTED"),
+        (r"\bNOTICE LEFT \(NO SECURE LOCATION AVAILABLE\)\b", "DELIVERY ATTEMPTED"),
+        (r"\bNOTICE LEFT\b", "DELIVERY ATTEMPTED"),
+        (r"\bDELIVERY ATTEMPT(?:ED)?\b", "DELIVERY ATTEMPTED"),
+        (r"\bNO ACCESS TO DELIVERY LOCATION\b", "DELIVERY ATTEMPTED"),
+        (r"\bNO ACCESS\b", "DELIVERY ATTEMPTED"),
+        (r"\bRECEPTACLE BLOCKED\b", "DELIVERY ATTEMPTED"),
+        (r"\bANIMAL INTERFERENCE\b", "DELIVERY ATTEMPTED"),
+        (r"\bBUSINESS CLOSED\b", "DELIVERY ATTEMPTED"),
+        (r"\bDELIVERY STATUS NOT UPDATED\b", "AWAITING DELIVERY SCAN"),
+        (r"\bAWAITING DELIVERY SCAN\b", "AWAITING DELIVERY SCAN"),
+
+        # Moving through USPS network
         (r"\bIN[- ]TRANSIT,\s*ARRIVING ON TIME\b", "IN TRANSIT"),
+        (r"\bIN[- ]TRANSIT,\s*ARRIVING LATE\b", "IN TRANSIT - DELAYED"),
+        (r"\bMOVING THROUGH NETWORK\b", "IN TRANSIT"),
+        (r"\bON THE WAY\b", "IN TRANSIT"),
         (r"\bIN TRANSIT TO NEXT FACILITY\b", "IN TRANSIT"),
         (r"\bIN TRANSIT\b", "IN TRANSIT"),
         (r"\bARRIVED AT USPS REGIONAL FACILITY\b", "IN TRANSIT"),
@@ -749,39 +765,38 @@ def _normalize_usps_card_status(card_text, tracking_number):
         (r"\bARRIVED AT USPS FACILITY\b", "IN TRANSIT"),
         (r"\bDEPARTED USPS FACILITY\b", "IN TRANSIT"),
         (r"\bPROCESSED THROUGH USPS FACILITY\b", "IN TRANSIT"),
+        (r"\bPROCESSED THROUGH FACILITY\b", "IN TRANSIT"),
         (r"\bARRIVED AT HUB\b", "IN TRANSIT"),
         (r"\bDEPARTED POST OFFICE\b", "IN TRANSIT"),
-        (r"\bARRIVED AT POST OFFICE\b", "PREPARING FOR DELIVERY"),
-        (r"\bPREPARING FOR DELIVERY\b", "PREPARING FOR DELIVERY"),
-        (r"\bAVAILABLE FOR REDELIVERY OR PICKUP\b", "AVAILABLE FOR PICKUP"),
-        (r"\bAVAILABLE FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
-        (r"\bHELD AT POST OFFICE\b", "AVAILABLE FOR PICKUP"),
-        (r"\bREADY FOR PICKUP\b", "AVAILABLE FOR PICKUP"),
-        (r"\bREDELIVERY SCHEDULED\b", "REDELIVERY SCHEDULED"),
-        (r"\bPREPARED FOR REDELIVERY\b", "PREPARING FOR REDELIVERY"),
-        (r"\bNOTICE LEFT\b", "DELIVERY ATTEMPTED"),
-        (r"\bDELIVERY ATTEMPT(?:ED)?\b", "DELIVERY ATTEMPTED"),
-        (r"\bNO ACCESS TO DELIVERY LOCATION\b", "DELIVERY ATTEMPTED"),
-        (r"\bRECEPTACLE BLOCKED\b", "DELIVERY ATTEMPTED"),
-        (r"\bANIMAL INTERFERENCE\b", "DELIVERY ATTEMPTED"),
-        (r"\bBUSINESS CLOSED\b", "DELIVERY ATTEMPTED"),
-        (r"\bAWAITING DELIVERY SCAN\b", "AWAITING DELIVERY SCAN"),
-        (r"\bDELIVERY STATUS NOT UPDATED\b", "AWAITING DELIVERY SCAN"),
+        (r"\bMISSENT\b", "IN TRANSIT - DELAYED"),
+
+        # Forwarding
+        (r"\bFORWARDED PROCESSED\b", "FORWARDED"),
         (r"\bFORWARDED\b", "FORWARDED"),
+
+        # USPS acceptance / possession
         (r"\bUSPS IN POSSESSION OF ITEM\b", "ACCEPTED"),
         (r"\bSHIPMENT RECEIVED,\s*PACKAGE ACCEPTANCE PENDING\b", "ACCEPTANCE PENDING"),
         (r"\bPACKAGE ACCEPTANCE PENDING\b", "ACCEPTANCE PENDING"),
         (r"\bACCEPTED AT USPS ORIGIN FACILITY\b", "ACCEPTED"),
         (r"\bORIGIN ACCEPTANCE\b", "ACCEPTED"),
+        (r"\bACCEPTED\b", "ACCEPTED"),
+
+        # Shipping partner has it, USPS does not yet
         (r"\bARRIVED SHIPPING PARTNER FACILITY,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
         (r"\bDEPARTED SHIPPING PARTNER FACILITY,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
         (r"\bPICKED UP BY SHIPPING PARTNER,\s*USPS AWAITING ITEM\b", "SHIPPING PARTNER"),
         (r"\bON ITS WAY TO USPS\b", "SHIPPING PARTNER"),
         (r"\bSHIPPING PARTNER\b", "SHIPPING PARTNER"),
+
+        # Label created / USPS has not received it
         (r"\bPRE-SHIPMENT INFO SENT TO USPS,\s*USPS AWAITING ITEM\b", "LABEL CREATED"),
         (r"\bSHIPPING LABEL CREATED,\s*USPS AWAITING ITEM\b", "LABEL CREATED"),
         (r"\bUSPS AWAITING ITEM\b", "LABEL CREATED"),
         (r"\bPRE-SHIPMENT\b", "LABEL CREATED"),
+        (r"\bLABEL CREATED\b", "LABEL CREATED"),
+
+        # Address / return / alert conditions
         (r"\bINSUFFICIENT ADDRESS\b", "RETURN TO SENDER"),
         (r"\bNO SUCH NUMBER\b", "RETURN TO SENDER"),
         (r"\bADDRESSEE UNKNOWN\b", "RETURN TO SENDER"),
@@ -789,49 +804,40 @@ def _normalize_usps_card_status(card_text, tracking_number):
         (r"\bUNCLAIMED\b", "RETURN TO SENDER"),
         (r"\bREFUSED\b", "RETURN TO SENDER"),
         (r"\bFORWARD EXPIRED\b", "RETURN TO SENDER"),
+        (r"\bRETURN TO SENDER PROCESSED\b", "RETURN TO SENDER"),
         (r"\bRETURN TO SENDER\b", "RETURN TO SENDER"),
+        (r"\bDEAD MAIL / SENT TO MAIL RECOVERY CENTER\b", "EXCEPTION"),
         (r"\bMAIL RECOVERY CENTER\b", "EXCEPTION"),
         (r"\bALERT\b", "EXCEPTION"),
+        (r"\bEXCEPTION\b", "EXCEPTION"),
+
+        # No usable tracking record
         (r"\bSTATUS NOT AVAILABLE\b", "NOT FOUND"),
         (r"\bNOT TRACKABLE\b", "NOT FOUND"),
         (r"\bTRACKING NUMBER MAY BE INCORRECT\b", "NOT FOUND"),
+        (r"\bLABEL DOES NOT EXIST\b", "NOT FOUND"),
     ]
 
-    active_matches = []
-    for pattern, normalized in active_patterns:
-        match = re.search(pattern, useful_upper, re.I)
+    matches = []
+    for pattern, normalized in status_patterns:
+        match = re.search(pattern, upper, re.I)
         if match:
-            active_matches.append(
-                (match.start(), -len(match.group(0)), normalized)
+            matches.append(
+                (
+                    match.start(),
+                    -len(match.group(0)),
+                    normalized,
+                    match.group(0),
+                )
             )
 
-    if active_matches:
-        active_matches.sort(key=lambda item: (item[0], item[1]))
-        return active_matches[0][2]
+    if not matches:
+        return "UNKNOWN"
 
-    delivered_patterns = [
-        r"\bYOUR ITEM WAS DELIVERED\b",
-        r"\bYOUR PACKAGE WAS DELIVERED\b",
-        r"\bDELIVERED,\s*(?:FRONT DESK|RECEPTION|MAIL ROOM|MAILROOM|"
-        r"PARCEL LOCKER|PO BOX|GARAGE|PORCH|DOOR|INDIVIDUAL|AGENT|"
-        r"LEFT WITH|RECEIVED BY|IN/AT MAILBOX)\b",
-        r"\bDELIVERED TO AGENT(?: FOR FINAL DELIVERY)?\b",
-        r"\bDELIVERED TO POSTAL AGENT\b",
-        r"\bDELIVERED AT\b",
-        r"\bDELIVERED ON\b",
-        r"\bPICKED UP AT POST OFFICE\b",
-        r"\bPICKED UP BY INDIVIDUAL AT POST OFFICE\b",
-    ]
-
-    for pattern in delivered_patterns:
-        if re.search(pattern, useful_upper, re.I):
-            return "DELIVERED"
-
-    bare = re.search(r"\bDELIVERED\b", useful_upper[:160], re.I)
-    if bare:
-        return "DELIVERED"
-
-    return "UNKNOWN"
+    # Earliest phrase after the tracking number is treated as current.
+    # At an equal position, the longest/more-specific phrase wins.
+    matches.sort(key=lambda item: (item[0], item[1]))
+    return matches[0][2]
 
 def _usps_card_segments(body, numbers):
     """
@@ -1431,7 +1437,8 @@ def _ups_tracking_url(numbers):
         f"{UPS_TRACKING_URL}?"
         + urlencode({
             "loc": "en_US",
-            "tracknum": ",".join(numbers),
+            # UPS batch tracking requires one tracking number per line.
+            "tracknum": "\n".join(numbers),
             "requester": "ST",
         })
     )
@@ -1588,7 +1595,8 @@ def _track_ups_batch(playwright, numbers, log):
             f"{len(numbers)} number(s)."
         )
         log(
-            "[UPS] Tracking numbers are being submitted automatically."
+            "[UPS] Tracking numbers are being submitted automatically, "
+            "one number per line."
         )
 
         page.goto(
