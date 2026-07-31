@@ -23,17 +23,61 @@ import numpy as np
 import pytesseract
 
 
-_BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-_TESSERACT = _BASE_DIR / "Tesseract-OCR" / "tesseract.exe"
-_TESSDATA = _BASE_DIR / "Tesseract-OCR" / "tessdata"
+import os
+import sys
+from pathlib import Path
 
-if not _TESSERACT.exists():
-    _TESSERACT = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe")
-if not _TESSDATA.exists():
-    _TESSDATA = Path(r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata")
+import pytesseract
 
-pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
-os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
+
+def _find_tesseract_paths():
+    """
+    Find bundled or installed Tesseract without using a user-specific path.
+    """
+    if getattr(sys, "frozen", False):
+        app_dir = Path(sys.executable).resolve().parent
+    else:
+        app_dir = Path(__file__).resolve().parent
+
+    meipass = Path(
+        getattr(sys, "_MEIPASS", app_dir)
+    )
+
+    candidates = [
+        app_dir / "Tesseract-OCR",
+        app_dir / "bundle" / "Tesseract-OCR",
+        meipass / "Tesseract-OCR",
+        Path("C:/Program Files/Tesseract-OCR"),
+        Path("C:/Program Files (x86)/Tesseract-OCR"),
+    ]
+
+    for folder in candidates:
+        exe = folder / "tesseract.exe"
+        tessdata = folder / "tessdata"
+
+        if exe.is_file() and tessdata.is_dir():
+            return exe, tessdata
+
+    checked = "\n".join(
+        f" - {folder}" for folder in candidates
+    )
+
+    raise FileNotFoundError(
+        "Tesseract OCR could not be found.\n"
+        "Checked:\n"
+        f"{checked}"
+    )
+
+
+_TESSERACT, _TESSDATA = _find_tesseract_paths()
+
+pytesseract.pytesseract.tesseract_cmd = str(
+    _TESSERACT
+)
+
+os.environ["TESSDATA_PREFIX"] = str(
+    _TESSDATA
+)
 
 
 SENDER_SHEET = [

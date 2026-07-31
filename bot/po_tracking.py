@@ -12,45 +12,58 @@ from PIL import Image
 #  RUNTIME PATHS
 # ------------------------------------------------------------------ #
 _BASE_DIR = (
-    Path(sys.executable).parent
+    Path(sys.executable).resolve().parent
     if getattr(sys, "frozen", False)
-    else Path(__file__).parent
+    else Path(__file__).resolve().parent
 )
 
-# Bundled Poppler first
-_BUNDLED_POPPLER = _BASE_DIR / "poppler" / "bin"
-
-# Development fallback
-_DEV_POPPLER = Path(
-    r"C:\Users\aayan.boradia\Downloads\poppler-26.02.0\Library\bin"
-)
-
-if (_BUNDLED_POPPLER / "pdfinfo.exe").exists():
-    POPPLER_PATH = str(_BUNDLED_POPPLER)
-elif (_DEV_POPPLER / "pdfinfo.exe").exists():
-    POPPLER_PATH = str(_DEV_POPPLER)
-else:
-    POPPLER_PATH = None
+_MEIPASS_DIR = Path(getattr(sys, "_MEIPASS", _BASE_DIR))
 
 
-# Bundled Tesseract first
-_TESSERACT = _BASE_DIR / "Tesseract-OCR" / "tesseract.exe"
-_TESSDATA = _BASE_DIR / "Tesseract-OCR" / "tessdata"
+def _find_poppler():
+    candidates = [
+        _BASE_DIR / "poppler" / "bin",
+        _BASE_DIR / "bundle" / "poppler" / "bin",
+        _MEIPASS_DIR / "poppler" / "bin",
+        Path("C:/Program Files/poppler/Library/bin"),
+        Path("C:/Program Files (x86)/poppler/Library/bin"),
+    ]
 
-# Development fallbacks
-if not _TESSERACT.exists():
-    _TESSERACT = Path(
-        r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tesseract.exe"
+    for folder in candidates:
+        if (folder / "pdfinfo.exe").is_file():
+            return folder
+
+    return None
+
+
+def _find_tesseract():
+    candidates = [
+        _BASE_DIR / "Tesseract-OCR",
+        _BASE_DIR / "bundle" / "Tesseract-OCR",
+        _MEIPASS_DIR / "Tesseract-OCR",
+        Path("C:/Program Files/Tesseract-OCR"),
+        Path("C:/Program Files (x86)/Tesseract-OCR"),
+    ]
+
+    for folder in candidates:
+        exe = folder / "tesseract.exe"
+        tessdata = folder / "tessdata"
+
+        if exe.is_file() and tessdata.is_dir():
+            return exe, tessdata
+
+    raise FileNotFoundError(
+        "Tesseract OCR could not be found in the bundled or standard install locations."
     )
 
-if not _TESSDATA.exists():
-    _TESSDATA = Path(
-        r"C:\Users\aayan.boradia\Downloads\Tesseract-OCR\tessdata"
-    )
+
+POPPLER_PATH_OBJ = _find_poppler()
+POPPLER_PATH = str(POPPLER_PATH_OBJ) if POPPLER_PATH_OBJ else None
+
+_TESSERACT, _TESSDATA = _find_tesseract()
 
 pytesseract.pytesseract.tesseract_cmd = str(_TESSERACT)
 os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
-
 
 def _normalize_ups_candidate(value):
     candidate = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
