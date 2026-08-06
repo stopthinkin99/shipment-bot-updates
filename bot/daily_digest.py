@@ -50,6 +50,7 @@ SHEET_TO_RECIPIENTS = {
         "cesar.villar@unidesignusa.com",
         "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
+        "nishant.kambali@unidesign-jewel.com",
     ],
     "EMBY": [
         "sujit.das@embyintl.com",
@@ -69,6 +70,7 @@ SHEET_TO_RECIPIENTS = {
         "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
         "aayan.boradia@unidesignusa.com",
+        "nishant.kambali@unidesign-jewel.com",
     ],
     "SOL": [
         "Igor@savransky.com",
