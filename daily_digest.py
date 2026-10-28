@@ -51,6 +51,7 @@ SHEET_TO_RECIPIENTS = {
         "fx.transactions@egonservices.com",
         "diana.torres@unidesignusa.com",
         "nishant.kambali@unidesign-jewel.com",
+        "uc.transactions@egonservices.com",
     ],
     "EMBY": [
         "sujit.das@embyintl.com",
